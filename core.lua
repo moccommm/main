@@ -1,7 +1,7 @@
 -- ===============================================
---   Da Hood Premium v9 - ULTIMATE
---   PRO Aimbot + ALL Effects + Bullet FX
---   github.com/moccommm/main
+--   Da Hood Safe v10 - Anti-Kick
+--   Убрано: Hitbox Expander, Kill Effects,
+--   Body modification, All dangerous features
 -- ===============================================
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -27,8 +27,7 @@ local function GetPing()
 end
 
 local function CalcPred()
-    local ping = GetPing() / 1000
-    return ping + 0.05
+    return GetPing() / 1000 + 0.05
 end
 
 local function Notify(t, m, d)
@@ -46,39 +45,33 @@ local function Tw(obj, props, dur)
     TS:Create(obj, TweenInfo.new(dur or 0.3, Enum.EasingStyle.Quint), props):Play()
 end
 
--- ==================== CONFIG ====================
+-- ==================== CONFIG (БЕЗОПАСНАЯ) ====================
 local CFG = {
-    Enabled = true, AimKey = "MB2", FOV = 200,
+    -- Aimbot (безопасно)
+    Enabled = true, AimKey = "MB2", FOV = 180,
     Pred = CalcPred(), Part = "Head",
     TeamCheck = false, NoDowned = true, NoCuffed = true, AutoPred = true,
     SmartPrediction = true, VelocityComp = 1.0,
     PredictJump = true, PredictFall = true,
-    HitboxExpander = false, HitboxSize = 5,
     TargetPriority = "Distance", IgnoreWalls = true,
 
+    -- ESP (безопасно - только Drawing)
     ShowFOV = true, ShowDot = true, ShowLine = true,
     ShowESP = true, ShowNames = true, ShowHP = true,
-    ShowDist = true, ShowBoxes = true, RainbowFOV = false,
+    ShowDist = true, RainbowFOV = false,
     ShowPredPath = true,
 
+    -- Персонажные эффекты (ТОЛЬКО НА СЕБЯ - безопасно)
     Wings = false, WingStyle = "Angel",
     Aura = false, AuraRainbow = false,
     Trail = false, TrailRainbow = false,
-    Particles = false, ParticleType = "Sparkle",
     FloatingRings = false, Halo = false,
-    BodyGlow = false, Sword = false,
-    Crown = false, Cape = false, Orbs = false,
+    BodyGlow = false, Orbs = false,
 
-    -- Bullet Effects
+    -- Bullet visual (только LOCAL - безопасно)
     BulletTrail = false, BulletTrailColor = Color3.fromRGB(255, 55, 85),
-    BulletTrailRainbow = false,
-    BulletImpact = false, ImpactType = "Explosion",
-    BulletGlow = false,
-    KillEffect = false, KillEffectType = "Dissolve",
-    MuzzleFlash = false, MuzzleColor = Color3.fromRGB(255, 200, 50),
-    TracerBullets = false,
-    HitMarker = false,
-    HitSound = false,
+    BulletTrailRainbow = false, MuzzleFlash = false,
+    HitMarker = false, HitSound = false,
 }
 
 local Alive = true
@@ -89,7 +82,7 @@ local ActiveEffects = {}
 local VelHistory = {}
 local CurrentTab = "Aim"
 
--- ==================== VELOCITY TRACKING ====================
+-- ==================== VELOCITY ====================
 local function UpdateVel(plr, vel)
     if not VelHistory[plr] then VelHistory[plr] = {} end
     table.insert(VelHistory[plr], {vel=vel, time=tick()})
@@ -174,11 +167,9 @@ local function GetTarget()
                     local sd = ((sp.X-cx)^2+(sp.Y-cy)^2)^0.5
                     if sd < CFG.FOV then
                         if not CFG.IgnoreWalls or IsVisible(part.Position) then
-                            local wd = 100
-                            pcall(function() local mr = LP.Character:FindFirstChild("HumanoidRootPart"); if mr then wd = (mr.Position-part.Position).Magnitude end end)
                             local hp = 100
                             pcall(function() hp = p.Character:FindFirstChildOfClass("Humanoid").Health end)
-                            table.insert(cands, {player=p, sd=sd, wd=wd, hp=hp})
+                            table.insert(cands, {player=p, sd=sd, hp=hp})
                             local root = p.Character:FindFirstChild("HumanoidRootPart")
                             if root then UpdateVel(p, root.AssemblyLinearVelocity) end
                         end
@@ -236,239 +227,66 @@ local function PredictPos()
     return predicted
 end
 
--- ==================== HITBOX ====================
-local function ExpandHitbox(plr)
-    if not CFG.HitboxExpander then return end
-    pcall(function()
-        local head = plr.Character:FindFirstChild("Head")
-        if head then
-            head.Size = Vector3.new(CFG.HitboxSize, CFG.HitboxSize, CFG.HitboxSize)
-            head.Transparency = 0.7
-            head.Material = Enum.Material.ForceField
-        end
-    end)
-end
+-- ==================== BULLET EFFECTS (БЕЗОПАСНЫЕ) ====================
+-- Только локальные визуальные эффекты в workspace, не трогают игроков
 
-local function ResetHitbox(plr)
-    pcall(function()
-        local head = plr.Character:FindFirstChild("Head")
-        if head then head.Size = Vector3.new(2,1,1); head.Transparency = 0; head.Material = Enum.Material.Plastic end
-    end)
-end
-
-spawn(function()
-    while Alive do
-        if CFG.HitboxExpander then
-            for _, p in ipairs(Players:GetPlayers()) do
-                if p ~= LP and IsValid(p) then ExpandHitbox(p) end
-            end
-        end
-        task.wait(0.5)
-    end
-end)
-
--- ==================== BULLET EFFECTS ====================
 local function CreateBulletTrail(origin, target)
     if not CFG.BulletTrail then return end
 
     local dir = (target - origin)
     local dist = dir.Magnitude
-    local mid = origin + dir/2
+    if dist > 500 then return end -- Не создаём слишком длинные
 
+    local mid = origin + dir/2
     local trail = Instance.new("Part")
     trail.Size = Vector3.new(0.15, 0.15, dist)
     trail.CFrame = CFrame.new(mid, target)
     trail.Anchored = true
     trail.CanCollide = false
     trail.Material = Enum.Material.Neon
-
-    if CFG.BulletTrailRainbow then
-        trail.Color = Color3.fromHSV((tick()*0.3)%1, 1, 1)
-    else
-        trail.Color = CFG.BulletTrailColor
-    end
-
+    trail.Color = CFG.BulletTrailRainbow and Color3.fromHSV((tick()*0.3)%1, 1, 1) or CFG.BulletTrailColor
     trail.Parent = workspace
 
-    -- Glow
-    if CFG.BulletGlow then
-        local light = Instance.new("PointLight", trail)
-        light.Color = trail.Color
-        light.Brightness = 3
-        light.Range = 8
-    end
+    local light = Instance.new("PointLight", trail)
+    light.Color = trail.Color
+    light.Brightness = 2
+    light.Range = 6
 
-    -- Particles on trail
-    local att = Instance.new("Attachment", trail)
-    local emitter = Instance.new("ParticleEmitter", att)
-    emitter.Rate = 200
-    emitter.Lifetime = NumberRange.new(0.2, 0.5)
-    emitter.Speed = NumberRange.new(1, 3)
-    emitter.SpreadAngle = Vector2.new(180, 180)
-    emitter.Size = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.5),
-        NumberSequenceKeypoint.new(1, 0),
-    })
-    emitter.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.3),
-        NumberSequenceKeypoint.new(1, 1),
-    })
-    emitter.LightEmission = 1
-    emitter.Texture = "rbxassetid://6823507655"
-    emitter.Color = ColorSequence.new(trail.Color)
-
-    -- Fade out
     spawn(function()
         for i = 0, 10 do
             pcall(function()
                 trail.Transparency = i / 10
                 trail.Size = Vector3.new(0.15 - (i*0.01), 0.15 - (i*0.01), dist)
             end)
-            task.wait(0.03)
+            task.wait(0.02)
         end
         pcall(function() trail:Destroy() end)
     end)
-end
-
-local function CreateImpactEffect(position, normal)
-    if not CFG.BulletImpact then return end
-
-    if CFG.ImpactType == "Explosion" then
-        local exp = Instance.new("Part")
-        exp.Size = Vector3.new(1, 1, 1)
-        exp.Position = position
-        exp.Anchored = true
-        exp.CanCollide = false
-        exp.Shape = Enum.PartType.Ball
-        exp.Material = Enum.Material.Neon
-        exp.Color = CFG.BulletTrailColor
-        exp.Transparency = 0.3
-        exp.Parent = workspace
-
-        local light = Instance.new("PointLight", exp)
-        light.Color = CFG.BulletTrailColor
-        light.Brightness = 5
-        light.Range = 15
-
-        -- Expand and fade
-        spawn(function()
-            for i = 0, 15 do
-                pcall(function()
-                    local s = 1 + i * 0.5
-                    exp.Size = Vector3.new(s, s, s)
-                    exp.Transparency = 0.3 + (i / 15) * 0.7
-                    light.Brightness = 5 - (i / 15) * 5
-                end)
-                task.wait(0.02)
-            end
-            pcall(function() exp:Destroy() end)
-        end)
-
-        -- Sparks
-        local att = Instance.new("Attachment")
-        att.Position = Vector3.zero
-        att.Parent = exp
-
-        local sparks = Instance.new("ParticleEmitter", att)
-        sparks.Rate = 0
-        sparks.Speed = NumberRange.new(10, 25)
-        sparks.SpreadAngle = Vector2.new(180, 180)
-        sparks.Lifetime = NumberRange.new(0.3, 0.8)
-        sparks.Size = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.5),
-            NumberSequenceKeypoint.new(1, 0),
-        })
-        sparks.LightEmission = 1
-        sparks.Texture = "rbxassetid://2273224484"
-        sparks.Color = ColorSequence.new(CFG.BulletTrailColor)
-        sparks:Emit(20)
-
-    elseif CFG.ImpactType == "Electric" then
-        local bolt = Instance.new("Part")
-        bolt.Size = Vector3.new(0.5, 0.5, 0.5)
-        bolt.Position = position
-        bolt.Anchored = true
-        bolt.CanCollide = false
-        bolt.Shape = Enum.PartType.Ball
-        bolt.Material = Enum.Material.Neon
-        bolt.Color = Color3.fromRGB(100, 200, 255)
-        bolt.Parent = workspace
-
-        local light = Instance.new("PointLight", bolt)
-        light.Color = Color3.fromRGB(100, 200, 255)
-        light.Brightness = 8
-        light.Range = 20
-
-        -- Lightning particles
-        local att = Instance.new("Attachment", bolt)
-        local e = Instance.new("ParticleEmitter", att)
-        e.Rate = 0
-        e.Speed = NumberRange.new(15, 30)
-        e.SpreadAngle = Vector2.new(180, 180)
-        e.Lifetime = NumberRange.new(0.1, 0.3)
-        e.Size = NumberSequence.new(1)
-        e.LightEmission = 1
-        e.Texture = "rbxassetid://6823507655"
-        e.Color = ColorSequence.new(Color3.fromRGB(100, 200, 255))
-        e:Emit(30)
-
-        Debris:AddItem(bolt, 0.5)
-
-    elseif CFG.ImpactType == "Fire" then
-        local fire = Instance.new("Part")
-        fire.Size = Vector3.new(1, 1, 1)
-        fire.Position = position
-        fire.Anchored = true
-        fire.CanCollide = false
-        fire.Transparency = 1
-        fire.Parent = workspace
-
-        local fireE = Instance.new("Fire", fire)
-        fireE.Size = 5
-        fireE.Heat = 10
-        fireE.Color = Color3.fromRGB(255, 100, 0)
-
-        Debris:AddItem(fire, 1)
-
-    elseif CFG.ImpactType == "Ice" then
-        for i = 1, 5 do
-            local shard = Instance.new("Part")
-            shard.Size = Vector3.new(0.3, math.random(5, 15)/10, 0.3)
-            shard.Position = position + Vector3.new(math.random(-10,10)/10, math.random(0,10)/10, math.random(-10,10)/10)
-            shard.Anchored = true
-            shard.CanCollide = false
-            shard.Material = Enum.Material.Ice
-            shard.Color = Color3.fromRGB(150, 200, 255)
-            shard.Transparency = 0.3
-            shard.Parent = workspace
-            Debris:AddItem(shard, 1)
-        end
-    end
 end
 
 local function CreateMuzzleFlash(position)
     if not CFG.MuzzleFlash then return end
 
     local flash = Instance.new("Part")
-    flash.Size = Vector3.new(2, 2, 2)
+    flash.Size = Vector3.new(1.5, 1.5, 1.5)
     flash.Position = position
     flash.Anchored = true
     flash.CanCollide = false
     flash.Shape = Enum.PartType.Ball
     flash.Material = Enum.Material.Neon
-    flash.Color = CFG.MuzzleColor
+    flash.Color = Color3.fromRGB(255, 200, 50)
     flash.Transparency = 0.3
     flash.Parent = workspace
 
     local light = Instance.new("PointLight", flash)
-    light.Color = CFG.MuzzleColor
-    light.Brightness = 10
-    light.Range = 25
+    light.Color = flash.Color
+    light.Brightness = 8
+    light.Range = 15
 
     spawn(function()
         for i = 0, 5 do
             pcall(function()
-                flash.Size = Vector3.new(2-i*0.3, 2-i*0.3, 2-i*0.3)
+                flash.Size = Vector3.new(1.5-i*0.25, 1.5-i*0.25, 1.5-i*0.25)
                 flash.Transparency = 0.3 + i*0.14
             end)
             task.wait(0.02)
@@ -479,221 +297,51 @@ end
 
 local function CreateHitMarker()
     if not CFG.HitMarker then return end
-
     local size = 20
     local cx = Cam.ViewportSize.X / 2
     local cy = Cam.ViewportSize.Y / 2
 
     local lines = {}
     for i = 1, 4 do
-        local l = Draw("Line", {
-            Thickness = 2,
-            Color = Color3.fromRGB(255, 50, 50),
-            Visible = true,
-        })
+        local l = Draw("Line", {Thickness = 2, Color = Color3.fromRGB(255, 50, 50), Visible = true})
         lines[i] = l
     end
-
-    -- X shape
-    lines[1].From = Vector2.new(cx-size, cy-size)
-    lines[1].To = Vector2.new(cx-size/3, cy-size/3)
-    lines[2].From = Vector2.new(cx+size, cy-size)
-    lines[2].To = Vector2.new(cx+size/3, cy-size/3)
-    lines[3].From = Vector2.new(cx-size, cy+size)
-    lines[3].To = Vector2.new(cx-size/3, cy+size/3)
-    lines[4].From = Vector2.new(cx+size, cy+size)
-    lines[4].To = Vector2.new(cx+size/3, cy+size/3)
+    lines[1].From = Vector2.new(cx-size, cy-size); lines[1].To = Vector2.new(cx-size/3, cy-size/3)
+    lines[2].From = Vector2.new(cx+size, cy-size); lines[2].To = Vector2.new(cx+size/3, cy-size/3)
+    lines[3].From = Vector2.new(cx-size, cy+size); lines[3].To = Vector2.new(cx-size/3, cy+size/3)
+    lines[4].From = Vector2.new(cx+size, cy+size); lines[4].To = Vector2.new(cx+size/3, cy+size/3)
 
     spawn(function()
         task.wait(0.3)
-        for _, l in ipairs(lines) do
-            pcall(function() l:Remove() end)
-        end
+        for _, l in ipairs(lines) do pcall(function() l:Remove() end) end
     end)
 end
 
-local function PlayHitSound()
-    if not CFG.HitSound then return end
-    pcall(function()
-        local sound = Instance.new("Sound")
-        sound.SoundId = "rbxassetid://160432334"
-        sound.Volume = 0.5
-        sound.Parent = workspace
-        sound:Play()
-        Debris:AddItem(sound, 1)
-    end)
-end
-
-local function CreateKillEffect(character)
-    if not CFG.KillEffect then return end
-    if not character then return end
-
-    local root = character:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    local pos = root.Position
-
-    if CFG.KillEffectType == "Dissolve" then
-        for _, part in ipairs(character:GetDescendants()) do
-            if part:IsA("BasePart") then
-                spawn(function()
-                    for i = 0, 20 do
-                        pcall(function()
-                            part.Transparency = i / 20
-                            part.Size = part.Size * 0.98
-                            part.Color = Color3.fromHSV((tick()*0.5+i*0.05)%1, 1, 1)
-                            part.Material = Enum.Material.Neon
-                        end)
-                        task.wait(0.03)
-                    end
-                end)
-            end
-        end
-
-    elseif CFG.KillEffectType == "Explode" then
-        for _, part in ipairs(character:GetDescendants()) do
-            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-                pcall(function()
-                    part.Anchored = false
-                    part:BreakJoints()
-                    local dir = (part.Position - pos).Unit + Vector3.new(0, 2, 0)
-                    part.AssemblyLinearVelocity = dir * math.random(30, 80)
-                    part.Material = Enum.Material.Neon
-                    part.Color = CFG.BulletTrailColor
-                end)
-            end
-        end
-
-        -- Explosion particles
-        local exp = Instance.new("Part")
-        exp.Size = Vector3.new(1,1,1)
-        exp.Position = pos
-        exp.Anchored = true
-        exp.CanCollide = false
-        exp.Transparency = 1
-        exp.Parent = workspace
-
-        local att = Instance.new("Attachment", exp)
-        local e = Instance.new("ParticleEmitter", att)
-        e.Rate = 0
-        e.Speed = NumberRange.new(20, 50)
-        e.SpreadAngle = Vector2.new(180, 180)
-        e.Lifetime = NumberRange.new(0.5, 1.5)
-        e.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 2), NumberSequenceKeypoint.new(1, 0)})
-        e.LightEmission = 1
-        e.Texture = "rbxassetid://6823507655"
-        e.Color = ColorSequence.new(CFG.BulletTrailColor)
-        e:Emit(50)
-
-        Debris:AddItem(exp, 2)
-
-    elseif CFG.KillEffectType == "Lightning" then
-        for i = 1, 8 do
-            local bolt = Instance.new("Part")
-            bolt.Size = Vector3.new(0.2, math.random(5, 15), 0.2)
-            bolt.Position = pos + Vector3.new(math.random(-5,5), math.random(5,20), math.random(-5,5))
-            bolt.Anchored = true
-            bolt.CanCollide = false
-            bolt.Material = Enum.Material.Neon
-            bolt.Color = Color3.fromRGB(100, 200, 255)
-            bolt.Parent = workspace
-
-            local light = Instance.new("PointLight", bolt)
-            light.Brightness = 5
-            light.Range = 15
-            light.Color = Color3.fromRGB(100, 200, 255)
-
-            Debris:AddItem(bolt, 0.5)
-        end
-
-    elseif CFG.KillEffectType == "Freeze" then
-        for _, part in ipairs(character:GetDescendants()) do
-            if part:IsA("BasePart") then
-                pcall(function()
-                    part.Material = Enum.Material.Ice
-                    part.Color = Color3.fromRGB(150, 200, 255)
-                    part.Anchored = true
-                end)
-            end
-        end
-
-        -- Ice explosion after delay
-        spawn(function()
-            task.wait(1)
-            for _, part in ipairs(character:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    pcall(function()
-                        part:BreakJoints()
-                        part.Anchored = false
-                        local dir = (part.Position - pos).Unit
-                        part.AssemblyLinearVelocity = dir * 50
-                    end)
-                end
-            end
-        end)
-    end
-end
-
--- Monitor kills
-local function WatchForKills()
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LP and plr.Character then
-            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
-            if hum then
-                hum.Died:Connect(function()
-                    if CFG.KillEffect then
-                        CreateKillEffect(plr.Character)
-                    end
-                end)
-            end
-        end
-    end
-end
-
-WatchForKills()
-Players.PlayerAdded:Connect(function(plr)
-    plr.CharacterAdded:Connect(function(ch)
-        task.wait(1)
-        local hum = ch:FindFirstChildOfClass("Humanoid")
-        if hum then
-            hum.Died:Connect(function()
-                if CFG.KillEffect then CreateKillEffect(ch) end
-            end)
-        end
-    end)
-end)
-
--- Detect shooting for bullet effects
-local lastShootTime = 0
-
+-- Детект стрельбы (безопасно)
+local lastShoot = 0
 UIS.InputBegan:Connect(function(inp, gpe)
     if gpe then return end
-
-    -- Shooting detection (LMB)
     if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-        if tick() - lastShootTime > 0.1 then
-            lastShootTime = tick()
-
-            if CFG.BulletTrail or CFG.BulletImpact or CFG.MuzzleFlash then
+        if tick() - lastShoot > 0.1 then
+            lastShoot = tick()
+            if CFG.BulletTrail or CFG.MuzzleFlash then
                 local ch = LP.Character
                 if ch then
                     local tool = ch:FindFirstChildOfClass("Tool")
                     if tool then
                         local handle = tool:FindFirstChild("Handle")
-                        local origin = handle and handle.Position or (ch.Head and ch.Head.Position) or Vector3.zero
-                        local target = Mouse.Hit.Position
-
-                        if CFG.MuzzleFlash then CreateMuzzleFlash(origin) end
-                        if CFG.BulletTrail then CreateBulletTrail(origin, target) end
-                        if CFG.BulletImpact then CreateImpactEffect(target, Vector3.new(0,1,0)) end
-                        if CFG.HitMarker and Target then CreateHitMarker() end
-                        if CFG.HitSound and Target then PlayHitSound() end
+                        local origin = handle and handle.Position or (ch.Head and ch.Head.Position)
+                        if origin then
+                            local target = Mouse.Hit.Position
+                            if CFG.MuzzleFlash then CreateMuzzleFlash(origin) end
+                            if CFG.BulletTrail then CreateBulletTrail(origin, target) end
+                            if CFG.HitMarker and Target then CreateHitMarker() end
+                        end
                     end
                 end
             end
         end
     end
-
-    -- Aim keys
     if CFG.AimKey == "MB2" and inp.UserInputType == Enum.UserInputType.MouseButton2 then Aiming = true end
     if CFG.AimKey == "MB1" and inp.UserInputType == Enum.UserInputType.MouseButton1 then Aiming = true end
     if CFG.AimKey == "Q" and inp.KeyCode == Enum.KeyCode.Q then Aiming = true end
@@ -709,7 +357,7 @@ end)
 
 spawn(function() while Alive do if CFG.AutoPred then CFG.Pred = CalcPred() end; task.wait(1) end end)
 
--- ==================== HOOKS ====================
+-- ==================== HOOKS (безопасно) ====================
 local HookOK = false
 if hookmetamethod then
     pcall(function()
@@ -748,11 +396,11 @@ if hookmetamethod then
     end)
 end
 
--- ==================== CHARACTER EFFECTS ====================
+-- ==================== CHARACTER EFFECTS (ТОЛЬКО НА СЕБЯ) ====================
 local function ClearEffect(name)
     if ActiveEffects[name] then pcall(function() ActiveEffects[name]:Destroy() end); ActiveEffects[name] = nil end
 end
-local function ClearAllEffects() for n in pairs(ActiveEffects) do ClearEffect(n) end end
+local function ClearAll() for n in pairs(ActiveEffects) do ClearEffect(n) end end
 local function GetChar() return LP.Character end
 local function GetRoot() local ch = GetChar(); return ch and ch:FindFirstChild("HumanoidRootPart") end
 local function GetTorso() local ch = GetChar(); return ch and (ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso")) end
@@ -767,12 +415,11 @@ end
 local function CreateWings()
     ClearEffect("Wings")
     local torso = GetTorso(); if not torso then return end
-    local folder = Instance.new("Model"); folder.Name = "Wings"; folder.Parent = torso
+    local folder = Instance.new("Model"); folder.Name = "MyWings"; folder.Parent = torso
     ActiveEffects["Wings"] = folder
     local styles = {
         Angel={c=Color3.fromRGB(255,255,255),g=Color3.fromRGB(255,215,0),n=8},
         Demon={c=Color3.fromRGB(30,0,0),g=Color3.fromRGB(255,0,0),n=6},
-        Dragon={c=Color3.fromRGB(0,100,50),g=Color3.fromRGB(0,255,100),n=5},
         Fire={c=Color3.fromRGB(255,100,0),g=Color3.fromRGB(255,200,0),n=7},
         Ice={c=Color3.fromRGB(150,200,255),g=Color3.fromRGB(200,230,255),n=7},
         Rainbow={c=Color3.new(1,1,1),g=Color3.new(1,1,1),n=8,r=true},
@@ -823,23 +470,23 @@ end
 
 local function CreateHalo()
     ClearEffect("Halo"); local head = GetHead(); if not head then return end
-    local halo = NeonPart(head, Vector3.new(3,0.15,3), CFG.HaloColor, 0.1)
+    local halo = NeonPart(head, Vector3.new(3,0.15,3), Color3.fromRGB(255,215,0), 0.1)
     halo.Shape = Enum.PartType.Cylinder; ActiveEffects["Halo"] = halo
     local w = Instance.new("Weld"); w.Part0=head; w.Part1=halo
     w.C0=CFrame.new(0,1.5,0)*CFrame.Angles(0,0,math.rad(90)); w.Parent=halo
-    Instance.new("PointLight",halo).Color = CFG.HaloColor
+    Instance.new("PointLight",halo).Color = Color3.fromRGB(255,215,0)
     spawn(function() local t=0; while Alive and ActiveEffects["Halo"] and CFG.Halo do
         t=t+0.05; pcall(function()
             w.C0=CFrame.new(0,1.5+math.sin(t)*0.1,0)*CFrame.Angles(0,math.rad(t*20),math.rad(90))
-            if CFG.AuraRainbow then local c=Color3.fromHSV((tick()*0.15)%1,1,1); halo.Color=c end
+            if CFG.AuraRainbow then halo.Color=Color3.fromHSV((tick()*0.15)%1,1,1) end
         end); task.wait(0.03) end end)
 end
 
 local function CreateGlow()
     ClearEffect("BodyGlow"); local ch = GetChar(); if not ch then return end
     local folder = Instance.new("Folder"); folder.Parent=ch; ActiveEffects["BodyGlow"]=folder
-    local hl = Instance.new("Highlight"); hl.FillColor=CFG.GlowColor; hl.FillTransparency=0.5
-    hl.OutlineColor=CFG.GlowColor; hl.Adornee=ch; hl.Parent=folder
+    local hl = Instance.new("Highlight"); hl.FillColor=CFG.BulletTrailColor; hl.FillTransparency=0.5
+    hl.OutlineColor=CFG.BulletTrailColor; hl.Adornee=ch; hl.Parent=folder
     spawn(function() while Alive and ActiveEffects["BodyGlow"] and CFG.BodyGlow do
         if CFG.AuraRainbow then local c=Color3.fromHSV((tick()*0.15)%1,1,1)
             pcall(function() hl.FillColor=c; hl.OutlineColor=c end) end
@@ -870,7 +517,7 @@ local function CreateRings()
     local folder = Instance.new("Folder"); folder.Parent=workspace; ActiveEffects["Rings"]=folder
     local rings = {}
     for i = 1, 4 do
-        local r = NeonPart(folder, Vector3.new(8-i,0.3,8-i), CFG.RingColor, 0.2)
+        local r = NeonPart(folder, Vector3.new(8-i,0.3,8-i), Color3.fromRGB(120,80,255), 0.2)
         r.Shape=Enum.PartType.Cylinder; r.Anchored=true; rings[i]=r
     end
     spawn(function() local t=0; while Alive and ActiveEffects["Rings"] and CFG.FloatingRings do
@@ -922,7 +569,7 @@ local function UpdateEffects()
     if CFG.Orbs then if not ActiveEffects["Orbs"] then CreateOrbs() end else ClearEffect("Orbs") end
 end
 
-LP.CharacterAdded:Connect(function() task.wait(2); ClearAllEffects(); UpdateEffects() end)
+LP.CharacterAdded:Connect(function() task.wait(2); ClearAll(); UpdateEffects() end)
 spawn(function() while Alive do UpdateEffects(); task.wait(1) end end)
 
 -- ==================== DRAWINGS ====================
@@ -961,8 +608,8 @@ local rc = RS.RenderStepped:Connect(function()
     if CFG.Enabled then GetTarget() else Target=nil end
 
     if watermark then
-        watermark.Position=Vector2.new(Cam.ViewportSize.X-250,10)
-        watermark.Text="DA HOOD ULTIMATE v9"
+        watermark.Position=Vector2.new(Cam.ViewportSize.X-200,10)
+        watermark.Text="DA HOOD SAFE v10"
         watermark.Color=CFG.RainbowFOV and rainbow or Color3.fromRGB(255,55,85)
         watermark.Visible=true
     end
@@ -998,7 +645,7 @@ local rc = RS.RenderStepped:Connect(function()
         if CFG.Enabled then info.Text=(Aiming and "LOCKED" or "SCANNING").."  "..(Target and Target.Name or "-"); info.Color=Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,220,50); info.Visible=true
         else info.Visible=false end
     end
-    if pingTxt then pingTxt.Text="Ping: "..math.floor(GetPing()).."ms | Pred: "..string.format("%.3fs",CFG.Pred).." | "..CFG.Part; pingTxt.Visible=CFG.Enabled end
+    if pingTxt then pingTxt.Text="Ping: "..math.floor(GetPing()).."ms | Pred: "..string.format("%.3fs",CFG.Pred); pingTxt.Visible=CFG.Enabled end
 
     for plr,e in pairs(ESP) do
         if not plr or not plr.Parent then KillESP(plr)
@@ -1037,7 +684,7 @@ local Th = {
 }
 
 local Main=Instance.new("Frame")
-Main.Size=UDim2.new(0,500,0,580); Main.Position=UDim2.new(0.5,-250,0.5,-290)
+Main.Size=UDim2.new(0,480,0,560); Main.Position=UDim2.new(0.5,-240,0.5,-280)
 Main.BackgroundColor3=Th.bg; Main.BorderSizePixel=0; Main.ClipsDescendants=true
 Main.Active=true; Main.Draggable=true; Main.Parent=G
 Instance.new("UICorner",Main).CornerRadius=UDim.new(0,14)
@@ -1051,12 +698,12 @@ local tf=Instance.new("Frame"); tf.Size=UDim2.new(1,0,0,14); tf.Position=UDim2.n
 tf.BackgroundColor3=Color3.fromRGB(14,14,22); tf.BorderSizePixel=0; tf.Parent=topBar
 
 local logo=Instance.new("TextLabel"); logo.Size=UDim2.new(0,300,1,0); logo.Position=UDim2.new(0,16,0,0)
-logo.BackgroundTransparency=1; logo.Text="🔥 DA HOOD ULTIMATE"; logo.TextColor3=Th.accent
+logo.BackgroundTransparency=1; logo.Text="🛡️ DA HOOD SAFE"; logo.TextColor3=Th.accent
 logo.Font=Enum.Font.GothamBlack; logo.TextSize=15; logo.TextXAlignment=Enum.TextXAlignment.Left; logo.Parent=topBar
 
 local ver=Instance.new("TextLabel"); ver.Size=UDim2.new(0,50,0,20); ver.Position=UDim2.new(1,-70,0.5,-10)
 ver.BackgroundColor3=Th.accent; ver.TextColor3=Color3.new(1,1,1); ver.Font=Enum.Font.GothamBold
-ver.TextSize=10; ver.Text="v9.0"; ver.BorderSizePixel=0; ver.Parent=topBar
+ver.TextSize=10; ver.Text="v10"; ver.BorderSizePixel=0; ver.Parent=topBar
 Instance.new("UICorner",ver).CornerRadius=UDim.new(1,0)
 
 local tabBar=Instance.new("Frame"); tabBar.Size=UDim2.new(1,-20,0,36); tabBar.Position=UDim2.new(0,10,0,54)
@@ -1064,7 +711,7 @@ tabBar.BackgroundColor3=Th.card; tabBar.BorderSizePixel=0; tabBar.Parent=Main
 Instance.new("UICorner",tabBar).CornerRadius=UDim.new(0,8)
 Instance.new("UIListLayout",tabBar).FillDirection=Enum.FillDirection.Horizontal
 
-local allTabs={"Aim","Advanced","Bullets","ESP","Effects","Settings"}
+local allTabs={"Aim","Advanced","Bullets","ESP","Effects","Info"}
 local tabFrames={}; local tabButtons={}
 
 for _,tn in ipairs(allTabs) do
@@ -1096,7 +743,6 @@ for tn,btn in pairs(tabButtons) do
     end)
 end
 
--- UI Helpers
 local function Sep(parent,text)
     local f=Instance.new("Frame"); f.Size=UDim2.new(1,0,0,22); f.BackgroundTransparency=1; f.Parent=parent
     local l=Instance.new("Frame",f); l.Size=UDim2.new(0.2,0,0,1); l.Position=UDim2.new(0,0,0.5,0); l.BackgroundColor3=Color3.fromRGB(40,40,55); l.BorderSizePixel=0
@@ -1160,8 +806,7 @@ local function BtnRow(parent,items)
     end
 end
 
--- ==================== BUILD TABS ====================
--- AIM
+-- BUILD TABS
 local aim=tabFrames["Aim"]
 Sep(aim,"Aimbot")
 Toggle(aim,"Silent Aim","Enabled","🎯")
@@ -1178,69 +823,38 @@ Toggle(aim,"Ignore Downed","NoDowned","💀")
 Toggle(aim,"Ignore Cuffed","NoCuffed","🔗")
 Toggle(aim,"Ignore Walls","IgnoreWalls","🧱")
 
--- ADVANCED
 local adv=tabFrames["Advanced"]
 Sep(adv,"Smart Prediction")
 Toggle(adv,"Smart Velocity","SmartPrediction","🧠")
 Toggle(adv,"Predict Jump","PredictJump","🦘")
 Toggle(adv,"Predict Fall","PredictFall","⬇️")
 Slider(adv,"Velocity Comp","VelocityComp",0.5,2,2)
-Sep(adv,"Hitbox")
-Toggle(adv,"Hitbox Expander","HitboxExpander","📦")
-Slider(adv,"Hitbox Size","HitboxSize",1,20,1)
 Sep(adv,"Target Priority")
 BtnRow(adv,{{name="Distance",col=Color3.fromRGB(40,120,200),cb=function() CFG.TargetPriority="Distance" end},{name="Low HP",col=Color3.fromRGB(200,40,60),cb=function() CFG.TargetPriority="HP" end}})
 Sep(adv,"Visuals")
 Toggle(adv,"Prediction Path","ShowPredPath","📐")
 
--- BULLETS (NEW!)
 local bul=tabFrames["Bullets"]
-Sep(bul,"🔫 Bullet Trail")
+Sep(bul,"🔫 Bullet Effects (SAFE)")
 Toggle(bul,"Bullet Trail","BulletTrail","💫")
 Toggle(bul,"Rainbow Trail","BulletTrailRainbow","🌈")
-Toggle(bul,"Bullet Glow","BulletGlow","💡")
-
-Sep(bul,"💥 Impact Effect")
-Toggle(bul,"Impact Effect","BulletImpact","💥")
-BtnRow(bul,{
-    {name="💥Explosion",col=Color3.fromRGB(255,100,0),cb=function() CFG.ImpactType="Explosion" end},
-    {name="⚡Electric",col=Color3.fromRGB(100,200,255),cb=function() CFG.ImpactType="Electric" end},
-    {name="🔥Fire",col=Color3.fromRGB(255,80,0),cb=function() CFG.ImpactType="Fire" end},
-    {name="❄️Ice",col=Color3.fromRGB(150,200,255),cb=function() CFG.ImpactType="Ice" end},
-})
-
-Sep(bul,"🔥 Muzzle Flash")
 Toggle(bul,"Muzzle Flash","MuzzleFlash","🔥")
-
-Sep(bul,"🎯 Hit Feedback")
 Toggle(bul,"Hit Marker","HitMarker","✖️")
-Toggle(bul,"Hit Sound","HitSound","🔊")
 
-Sep(bul,"💀 Kill Effect")
-Toggle(bul,"Kill Effect","KillEffect","💀")
-BtnRow(bul,{
-    {name="✨Dissolve",col=Color3.fromRGB(200,100,255),cb=function() CFG.KillEffectType="Dissolve" end},
-    {name="💥Explode",col=Color3.fromRGB(255,80,0),cb=function() CFG.KillEffectType="Explode" end},
-    {name="⚡Lightning",col=Color3.fromRGB(100,200,255),cb=function() CFG.KillEffectType="Lightning" end},
-    {name="❄️Freeze",col=Color3.fromRGB(150,200,255),cb=function() CFG.KillEffectType="Freeze" end},
-})
+local espT=tabFrames["ESP"]
+Sep(espT,"ESP")
+Toggle(espT,"ESP","ShowESP","👁")
+Toggle(espT,"Names","ShowNames","📝")
+Toggle(espT,"HP","ShowHP","❤️")
+Toggle(espT,"Distance","ShowDist","📏")
+Sep(espT,"Aim Visuals")
+Toggle(espT,"FOV Circle","ShowFOV","⭕")
+Toggle(espT,"Target Dot","ShowDot","🔴")
+Toggle(espT,"Target Line","ShowLine","📍")
+Toggle(espT,"Rainbow FOV","RainbowFOV","🌈")
 
--- ESP
-local espTab=tabFrames["ESP"]
-Sep(espTab,"ESP")
-Toggle(espTab,"ESP","ShowESP","👁")
-Toggle(espTab,"Names","ShowNames","📝")
-Toggle(espTab,"HP","ShowHP","❤️")
-Toggle(espTab,"Distance","ShowDist","📏")
-Sep(espTab,"Aim Visuals")
-Toggle(espTab,"FOV Circle","ShowFOV","⭕")
-Toggle(espTab,"Target Dot","ShowDot","🔴")
-Toggle(espTab,"Target Line","ShowLine","📍")
-Toggle(espTab,"Rainbow FOV","RainbowFOV","🌈")
-
--- EFFECTS
 local fx=tabFrames["Effects"]
-Sep(fx,"Character Effects")
+Sep(fx,"Character Effects (SELF)")
 Toggle(fx,"Wings","Wings","🪽")
 BtnRow(fx,{
     {name="Angel",col=Color3.fromRGB(255,215,0),cb=function() CFG.WingStyle="Angel"; ClearEffect("Wings") end},
@@ -1256,26 +870,31 @@ Toggle(fx,"Rainbow Trail","TrailRainbow","🌈")
 Toggle(fx,"Rings","FloatingRings","💫")
 Toggle(fx,"Orbs","Orbs","🔮")
 Toggle(fx,"Rainbow All","AuraRainbow","🌈")
-
 Sep(fx,"Presets")
 BtnRow(fx,{
     {name="👑 GOD",col=Color3.fromRGB(255,100,50),cb=function()
         CFG.Wings=true; CFG.WingStyle="Rainbow"; CFG.Aura=true; CFG.AuraRainbow=true
         CFG.Trail=true; CFG.TrailRainbow=true; CFG.Halo=true; CFG.BodyGlow=true
         CFG.FloatingRings=true; CFG.Orbs=true; CFG.BulletTrail=true; CFG.BulletTrailRainbow=true
-        CFG.BulletImpact=true; CFG.KillEffect=true; CFG.MuzzleFlash=true; CFG.HitMarker=true
-        UpdateEffects(); Notify("GOD MODE","Everything enabled!",3)
+        CFG.MuzzleFlash=true; CFG.HitMarker=true
+        UpdateEffects(); Notify("GOD MODE","All effects on!",3)
     end},
     {name="❌ OFF",col=Color3.fromRGB(80,80,80),cb=function()
-        for _,k in ipairs({"Wings","Aura","Trail","Halo","BodyGlow","FloatingRings","Orbs","AuraRainbow","TrailRainbow","BulletTrail","BulletImpact","KillEffect","MuzzleFlash","HitMarker","HitSound","BulletGlow","BulletTrailRainbow"}) do CFG[k]=false end
-        ClearAllEffects(); Notify("Effects","All off",2)
+        for _,k in ipairs({"Wings","Aura","Trail","Halo","BodyGlow","FloatingRings","Orbs","AuraRainbow","TrailRainbow","BulletTrail","MuzzleFlash","HitMarker","BulletTrailRainbow"}) do CFG[k]=false end
+        ClearAll(); Notify("Effects","All off",2)
     end},
 })
 
--- SETTINGS
-local set=tabFrames["Settings"]
-Sep(set,"Status")
-local sf=Instance.new("Frame"); sf.Size=UDim2.new(1,0,0,70); sf.BackgroundColor3=Th.card; sf.BorderSizePixel=0; sf.Parent=set
+local infoT=tabFrames["Info"]
+Sep(infoT,"⚠️ Anti-Kick Info")
+local warn1=Instance.new("TextLabel"); warn1.Size=UDim2.new(1,0,0,100); warn1.BackgroundColor3=Color3.fromRGB(60,20,20)
+warn1.TextColor3=Color3.new(1,1,1); warn1.Font=Enum.Font.Gotham; warn1.TextSize=11; warn1.TextWrapped=true
+warn1.Text="🛡️ БЕЗОПАСНАЯ ВЕРСИЯ\n\nУбраны опасные функции:\n❌ Hitbox Expander (кикает)\n❌ Kill Effects на игроков\n❌ Impact Effects (много объектов)\n❌ Изменение тел игроков\n\nОставлены безопасные:\n✅ Silent Aim через Mouse.Hit\n✅ ESP только Drawing\n✅ Эффекты только на СЕБЯ\n✅ Bullet trail (свои пули)"
+warn1.BorderSizePixel=0; warn1.Parent=infoT
+Instance.new("UICorner",warn1).CornerRadius=UDim.new(0,8)
+
+Sep(infoT,"Status")
+local sf=Instance.new("Frame"); sf.Size=UDim2.new(1,0,0,70); sf.BackgroundColor3=Th.card; sf.BorderSizePixel=0; sf.Parent=infoT
 Instance.new("UICorner",sf).CornerRadius=UDim.new(0,10)
 local hl=Instance.new("TextLabel"); hl.Size=UDim2.new(0.5,0,0,22); hl.Position=UDim2.new(0,14,0,8)
 hl.BackgroundTransparency=1; hl.Font=Enum.Font.GothamBold; hl.TextSize=12
@@ -1284,22 +903,15 @@ hl.TextColor3=HookOK and Th.green or Th.accent; hl.Parent=sf
 local pl=Instance.new("TextLabel"); pl.Size=UDim2.new(0.5,-14,0,22); pl.Position=UDim2.new(0.5,0,0,8)
 pl.BackgroundTransparency=1; pl.Font=Enum.Font.Gotham; pl.TextSize=11
 pl.TextColor3=Th.dim; pl.TextXAlignment=Enum.TextXAlignment.Right; pl.Parent=sf
-local prl=Instance.new("TextLabel"); prl.Size=UDim2.new(1,-28,0,20); prl.Position=UDim2.new(0,14,0,34)
-prl.BackgroundTransparency=1; prl.Font=Enum.Font.Gotham; prl.TextSize=10
-prl.TextColor3=Th.dim; prl.TextXAlignment=Enum.TextXAlignment.Left; prl.Parent=sf
+spawn(function() while Alive do pl.Text="Ping: "..math.floor(GetPing()).."ms"; task.wait(1) end end)
 
-spawn(function() while Alive do
-    pl.Text="Ping: "..math.floor(GetPing()).."ms"
-    prl.Text="Pred: "..string.format("%.3f",CFG.Pred).." | "..CFG.Part.." | "..CFG.AimKey
-    task.wait(1) end end)
+Sep(infoT,"Controls")
+local ct=Instance.new("TextLabel"); ct.Size=UDim2.new(1,0,0,60); ct.BackgroundColor3=Th.card
+ct.TextColor3=Th.dim; ct.Font=Enum.Font.Gotham; ct.TextSize=11; ct.TextWrapped=true
+ct.Text="INSERT = Hide/Show menu\nDELETE = Unload script\nHold aim key = activate aim"
+ct.BorderSizePixel=0; ct.Parent=infoT
+Instance.new("UICorner",ct).CornerRadius=UDim.new(0,8)
 
-Sep(set,"Info")
-local il=Instance.new("TextLabel"); il.Size=UDim2.new(1,0,0,60); il.BackgroundColor3=Th.card
-il.TextColor3=Th.dim; il.Font=Enum.Font.Gotham; il.TextSize=10; il.TextWrapped=true
-il.Text="INSERT = Hide | DELETE = Unload\nHold Aim Key to aim\ngithub.com/moccommm/main"
-il.BorderSizePixel=0; il.Parent=set; Instance.new("UICorner",il).CornerRadius=UDim.new(0,8)
-
--- ==================== HOTKEYS ====================
 UIS.InputBegan:Connect(function(inp,gpe)
     if gpe then return end
     if inp.KeyCode==Enum.KeyCode.Insert or inp.KeyCode==Enum.KeyCode.RightShift then G.Enabled=not G.Enabled end
@@ -1308,21 +920,19 @@ end)
 spawn(function()
     while Alive do
         if UIS:IsKeyDown(Enum.KeyCode.Delete) then
-            Alive=false; ClearAllEffects()
-            for _,p in ipairs(Players:GetPlayers()) do if p~=LP then pcall(function() ResetHitbox(p) end) end end
+            Alive=false; ClearAll()
             pcall(function() rc:Disconnect() end)
             for p in pairs(ESP) do KillESP(p) end
             for _,o in pairs({fov,dot,line,info,pingTxt,watermark,predLine}) do if o then pcall(function() o:Remove() end) end end
             if G then pcall(function() G:Destroy() end) end
-            Notify("Da Hood Ultimate","Unloaded",2); break
+            Notify("Da Hood Safe","Unloaded",2); break
         end
         task.wait(0.5)
     end
 end)
 
-Notify("Da Hood Ultimate v9","Loaded! New: Bullet Effects tab",3)
-print("=== DA HOOD ULTIMATE v9 ===")
+Notify("Da Hood Safe v10","Anti-kick version loaded",3)
+print("=== DA HOOD SAFE v10 ===")
 print("Hook: "..(HookOK and "OK" or "FAIL"))
-print("NEW: Bullet Trail + Impact + Kill Effects")
-print("INSERT = menu | DELETE = unload")
-print("============================")
+print("SAFE VERSION - no kicks")
+print("========================")
