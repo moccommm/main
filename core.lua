@@ -1,7 +1,7 @@
 -- ===============================================
---   Da Hood Safe v10 - Anti-Kick
---   Убрано: Hitbox Expander, Kill Effects,
---   Body modification, All dangerous features
+--   Da Hood Safe v11 - PRO HEAD AIM
+--   ТОЛЬКО ГОЛОВА | Максимальная точность
+--   Anti-Kick | Smart Prediction
 -- ===============================================
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -27,7 +27,12 @@ local function GetPing()
 end
 
 local function CalcPred()
-    return GetPing() / 1000 + 0.05
+    local ping = GetPing() / 1000
+    return ping + 0.04
+end
+
+local function GetFPS()
+    return math.floor(1 / RS.RenderStepped:Wait())
 end
 
 local function Notify(t, m, d)
@@ -45,33 +50,45 @@ local function Tw(obj, props, dur)
     TS:Create(obj, TweenInfo.new(dur or 0.3, Enum.EasingStyle.Quint), props):Play()
 end
 
--- ==================== CONFIG (БЕЗОПАСНАЯ) ====================
+-- ==================== CONFIG ====================
 local CFG = {
-    -- Aimbot (безопасно)
+    -- Aim Core (HEAD ONLY)
     Enabled = true, AimKey = "MB2", FOV = 180,
-    Pred = CalcPred(), Part = "Head",
+    Pred = CalcPred(),
     TeamCheck = false, NoDowned = true, NoCuffed = true, AutoPred = true,
-    SmartPrediction = true, VelocityComp = 1.0,
-    PredictJump = true, PredictFall = true,
-    TargetPriority = "Distance", IgnoreWalls = true,
+    IgnoreWalls = true,
 
-    -- ESP (безопасно - только Drawing)
+    -- Advanced HEAD prediction
+    SmartPrediction = true,
+    VelocityComp = 1.0,
+    PredictJump = true, PredictFall = true,
+    HeadOffset = 0.0,        -- Смещение прицела вверх/вниз (fine-tune)
+    UsePingComp = true,      -- Ping compensation
+    PingMultiplier = 1.0,    -- Множитель компенсации пинга
+    UseAccel = true,         -- Учёт ускорения
+    VelocitySmoothing = 0.6, -- 0-1, чем выше тем плавнее
+    MaxPrediction = 0.35,    -- Ограничение макс. предикшна
+    ResolverEnabled = true,  -- Resolver для активно движущихся
+
+    TargetPriority = "Distance",
+
+    -- ESP
     ShowFOV = true, ShowDot = true, ShowLine = true,
     ShowESP = true, ShowNames = true, ShowHP = true,
-    ShowDist = true, RainbowFOV = false,
-    ShowPredPath = true,
+    ShowDist = true, RainbowFOV = false, ShowPredPath = true,
+    ShowHeadDot = true,      -- Точка на голове цели
 
-    -- Персонажные эффекты (ТОЛЬКО НА СЕБЯ - безопасно)
+    -- Effects
     Wings = false, WingStyle = "Angel",
     Aura = false, AuraRainbow = false,
     Trail = false, TrailRainbow = false,
     FloatingRings = false, Halo = false,
     BodyGlow = false, Orbs = false,
 
-    -- Bullet visual (только LOCAL - безопасно)
+    -- Bullets
     BulletTrail = false, BulletTrailColor = Color3.fromRGB(255, 55, 85),
     BulletTrailRainbow = false, MuzzleFlash = false,
-    HitMarker = false, HitSound = false,
+    HitMarker = false,
 }
 
 local Alive = true
@@ -80,29 +97,65 @@ local Aiming = false
 local RainbowHue = 0
 local ActiveEffects = {}
 local VelHistory = {}
+local PosHistory = {}   -- История позиций для точного предикшна
 local CurrentTab = "Aim"
 
--- ==================== VELOCITY ====================
-local function UpdateVel(plr, vel)
+-- ==================== ADVANCED VELOCITY & POSITION TRACKING ====================
+local function UpdateHistory(plr, pos, vel)
     if not VelHistory[plr] then VelHistory[plr] = {} end
-    table.insert(VelHistory[plr], {vel=vel, time=tick()})
-    if #VelHistory[plr] > 10 then table.remove(VelHistory[plr], 1) end
+    if not PosHistory[plr] then PosHistory[plr] = {} end
+
+    local t = tick()
+    table.insert(VelHistory[plr], {vel=vel, time=t})
+    table.insert(PosHistory[plr], {pos=pos, time=t})
+
+    if #VelHistory[plr] > 15 then table.remove(VelHistory[plr], 1) end
+    if #PosHistory[plr] > 15 then table.remove(PosHistory[plr], 1) end
 end
 
 local function GetSmoothedVel(plr)
-    if not VelHistory[plr] or #VelHistory[plr] < 2 then return Vector3.zero end
+    if not VelHistory[plr] or #VelHistory[plr] < 3 then return Vector3.zero end
     local sum = Vector3.zero
-    for _, e in ipairs(VelHistory[plr]) do sum = sum + e.vel end
-    return sum / #VelHistory[plr]
+    local weight = 0
+    -- Больший вес недавним данным
+    for i, e in ipairs(VelHistory[plr]) do
+        local w = i / #VelHistory[plr]
+        sum = sum + e.vel * w
+        weight = weight + w
+    end
+    return sum / weight
 end
 
 local function GetAccel(plr)
-    if not VelHistory[plr] or #VelHistory[plr] < 2 then return Vector3.zero end
+    if not VelHistory[plr] or #VelHistory[plr] < 3 then return Vector3.zero end
     local last = VelHistory[plr][#VelHistory[plr]]
-    local prev = VelHistory[plr][#VelHistory[plr]-1]
+    local prev = VelHistory[plr][#VelHistory[plr]-2]  -- Берём 2 назад для стабильности
     local dt = last.time - prev.time
     if dt <= 0 then return Vector3.zero end
     return (last.vel - prev.vel) / dt
+end
+
+-- Resolver - определяет "истинную" позицию цели
+local function ResolveTargetPos(plr, currentPos)
+    if not CFG.ResolverEnabled then return currentPos end
+    if not PosHistory[plr] or #PosHistory[plr] < 5 then return currentPos end
+
+    -- Проверяем стабильность позиций (не телепортируется ли)
+    local recent = PosHistory[plr][#PosHistory[plr]]
+    local older = PosHistory[plr][#PosHistory[plr] - 4]
+    local dt = recent.time - older.time
+
+    if dt > 0 then
+        local expectedVel = (recent.pos - older.pos) / dt
+        local actualVel = GetSmoothedVel(plr)
+
+        -- Если реальная скорость сильно отличается — используем расчётную
+        if (expectedVel - actualVel).Magnitude > 20 then
+            return currentPos + (expectedVel * CFG.Pred * 0.5)
+        end
+    end
+
+    return currentPos
 end
 
 -- ==================== CHECKS ====================
@@ -112,7 +165,8 @@ local function IsValid(plr)
     if not ch then return false end
     local hum = ch:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return false end
-    if not ch:FindFirstChild(CFG.Part) then return false end
+    -- ТОЛЬКО ГОЛОВА
+    if not ch:FindFirstChild("Head") then return false end
 
     if CFG.TeamCheck then
         local ok, same = pcall(function() return plr.Team and LP.Team and plr.Team == LP.Team end)
@@ -133,26 +187,30 @@ local function IsValid(plr)
     return true
 end
 
-local function IsVisible(pos)
+local function IsHeadVisible(headPos)
     if not CFG.IgnoreWalls then return true end
     local ch = LP.Character
     if not ch then return false end
-    local head = ch:FindFirstChild("Head")
-    if not head then return false end
+    local myHead = ch:FindFirstChild("Head")
+    if not myHead then return false end
+
     local rp = RaycastParams.new()
     rp.FilterType = Enum.RaycastFilterType.Blacklist
-    rp.FilterDescendantsInstances = {ch}
-    local result = workspace:Raycast(head.Position, (pos - head.Position), rp)
+    rp.FilterDescendantsInstances = {ch, workspace.CurrentCamera}
+
+    local dir = (headPos - myHead.Position)
+    local result = workspace:Raycast(myHead.Position, dir, rp)
     if not result then return true end
+
     local hit = result.Instance
     if hit and hit.Parent then
         local p = Players:GetPlayerFromCharacter(hit.Parent)
         if p and p ~= LP then return true end
     end
-    return math.abs((result.Position - head.Position).Magnitude - (pos - head.Position).Magnitude) < 3
+    return math.abs((result.Position - myHead.Position).Magnitude - dir.Magnitude) < 3
 end
 
--- ==================== TARGETING ====================
+-- ==================== TARGET SELECTION (HEAD ONLY) ====================
 local function GetTarget()
     local cands = {}
     local cx = Cam.ViewportSize.X/2
@@ -160,18 +218,21 @@ local function GetTarget()
 
     for _, p in ipairs(Players:GetPlayers()) do
         if IsValid(p) then
-            local part = p.Character:FindFirstChild(CFG.Part)
-            if part then
-                local sp, vis = Cam:WorldToViewportPoint(part.Position)
+            local head = p.Character:FindFirstChild("Head")
+            if head then
+                local sp, vis = Cam:WorldToViewportPoint(head.Position)
                 if vis then
                     local sd = ((sp.X-cx)^2+(sp.Y-cy)^2)^0.5
                     if sd < CFG.FOV then
-                        if not CFG.IgnoreWalls or IsVisible(part.Position) then
+                        if not CFG.IgnoreWalls or IsHeadVisible(head.Position) then
                             local hp = 100
                             pcall(function() hp = p.Character:FindFirstChildOfClass("Humanoid").Health end)
-                            table.insert(cands, {player=p, sd=sd, hp=hp})
+                            table.insert(cands, {player=p, sd=sd, hp=hp, head=head})
+
                             local root = p.Character:FindFirstChild("HumanoidRootPart")
-                            if root then UpdateVel(p, root.AssemblyLinearVelocity) end
+                            if root then
+                                UpdateHistory(p, head.Position, root.AssemblyLinearVelocity)
+                            end
                         end
                     end
                 end
@@ -189,135 +250,81 @@ local function GetTarget()
     return Target
 end
 
-local function PredictPos()
+-- ==================== PRECISE HEAD PREDICTION ====================
+local function PredictHeadPos()
     if not Target then return nil end
     local ch = Target.Character
     if not ch then return nil end
-    local part = ch:FindFirstChild(CFG.Part)
-    if not part then return nil end
+    local head = ch:FindFirstChild("Head")
+    if not head then return nil end
     local root = ch:FindFirstChild("HumanoidRootPart")
-    if not root then return part.Position end
+    if not root then return head.Position end
 
-    local vel = root.AssemblyLinearVelocity
-    if CFG.SmartPrediction then
-        local sv = GetSmoothedVel(Target)
-        if sv.Magnitude > 0.5 then vel = vel*0.6 + sv*0.4 end
+    -- Базовая позиция головы
+    local basePos = head.Position
+
+    -- Применяем resolver
+    if CFG.ResolverEnabled then
+        basePos = ResolveTargetPos(Target, basePos)
     end
-    vel = vel * CFG.VelocityComp
-    local predicted = part.Position + (vel * CFG.Pred)
+
+    -- Расчёт скорости
+    local rawVel = root.AssemblyLinearVelocity
+    local finalVel = rawVel
 
     if CFG.SmartPrediction then
-        local accel = GetAccel(Target)
-        if accel.Magnitude > 5 then
-            predicted = predicted + (accel * CFG.Pred * CFG.Pred * 0.5)
+        local smoothVel = GetSmoothedVel(Target)
+        if smoothVel.Magnitude > 0.5 then
+            -- Смешиваем текущую и усреднённую с коэффициентом
+            local smooth = CFG.VelocitySmoothing
+            finalVel = rawVel * (1 - smooth) + smoothVel * smooth
         end
     end
 
+    finalVel = finalVel * CFG.VelocityComp
+
+    -- Ping compensation
+    local predTime = CFG.Pred
+    if CFG.UsePingComp then
+        predTime = predTime * CFG.PingMultiplier
+    end
+    predTime = math.min(predTime, CFG.MaxPrediction)
+
+    -- Базовое предсказание позиции
+    local predicted = basePos + (finalVel * predTime)
+
+    -- Учёт ускорения (для резких манёвров)
+    if CFG.UseAccel and CFG.SmartPrediction then
+        local accel = GetAccel(Target)
+        local accelMag = accel.Magnitude
+        if accelMag > 3 and accelMag < 50 then  -- Игнорируем нереалистичные ускорения
+            predicted = predicted + (accel * predTime * predTime * 0.5)
+        end
+    end
+
+    -- Компенсация прыжка
     if CFG.PredictJump then
         local hum = ch:FindFirstChildOfClass("Humanoid")
         if hum then
             local state = hum:GetState()
             if state == Enum.HumanoidStateType.Jumping then
-                predicted = predicted + Vector3.new(0, 3, 0) * CFG.Pred
+                -- Скорость прыжка вверх
+                predicted = predicted + Vector3.new(0, 25 * predTime, 0)
             elseif state == Enum.HumanoidStateType.Freefall and CFG.PredictFall then
-                predicted = predicted + Vector3.new(0, -(workspace.Gravity or 196.2) * CFG.Pred * CFG.Pred * 0.5, 0)
+                -- Гравитация
+                local gravity = workspace.Gravity or 196.2
+                predicted = predicted + Vector3.new(0, -gravity * predTime * predTime * 0.5, 0)
             end
         end
     end
+
+    -- Fine-tune смещение головы
+    predicted = predicted + Vector3.new(0, CFG.HeadOffset, 0)
+
     return predicted
 end
 
--- ==================== BULLET EFFECTS (БЕЗОПАСНЫЕ) ====================
--- Только локальные визуальные эффекты в workspace, не трогают игроков
-
-local function CreateBulletTrail(origin, target)
-    if not CFG.BulletTrail then return end
-
-    local dir = (target - origin)
-    local dist = dir.Magnitude
-    if dist > 500 then return end -- Не создаём слишком длинные
-
-    local mid = origin + dir/2
-    local trail = Instance.new("Part")
-    trail.Size = Vector3.new(0.15, 0.15, dist)
-    trail.CFrame = CFrame.new(mid, target)
-    trail.Anchored = true
-    trail.CanCollide = false
-    trail.Material = Enum.Material.Neon
-    trail.Color = CFG.BulletTrailRainbow and Color3.fromHSV((tick()*0.3)%1, 1, 1) or CFG.BulletTrailColor
-    trail.Parent = workspace
-
-    local light = Instance.new("PointLight", trail)
-    light.Color = trail.Color
-    light.Brightness = 2
-    light.Range = 6
-
-    spawn(function()
-        for i = 0, 10 do
-            pcall(function()
-                trail.Transparency = i / 10
-                trail.Size = Vector3.new(0.15 - (i*0.01), 0.15 - (i*0.01), dist)
-            end)
-            task.wait(0.02)
-        end
-        pcall(function() trail:Destroy() end)
-    end)
-end
-
-local function CreateMuzzleFlash(position)
-    if not CFG.MuzzleFlash then return end
-
-    local flash = Instance.new("Part")
-    flash.Size = Vector3.new(1.5, 1.5, 1.5)
-    flash.Position = position
-    flash.Anchored = true
-    flash.CanCollide = false
-    flash.Shape = Enum.PartType.Ball
-    flash.Material = Enum.Material.Neon
-    flash.Color = Color3.fromRGB(255, 200, 50)
-    flash.Transparency = 0.3
-    flash.Parent = workspace
-
-    local light = Instance.new("PointLight", flash)
-    light.Color = flash.Color
-    light.Brightness = 8
-    light.Range = 15
-
-    spawn(function()
-        for i = 0, 5 do
-            pcall(function()
-                flash.Size = Vector3.new(1.5-i*0.25, 1.5-i*0.25, 1.5-i*0.25)
-                flash.Transparency = 0.3 + i*0.14
-            end)
-            task.wait(0.02)
-        end
-        pcall(function() flash:Destroy() end)
-    end)
-end
-
-local function CreateHitMarker()
-    if not CFG.HitMarker then return end
-    local size = 20
-    local cx = Cam.ViewportSize.X / 2
-    local cy = Cam.ViewportSize.Y / 2
-
-    local lines = {}
-    for i = 1, 4 do
-        local l = Draw("Line", {Thickness = 2, Color = Color3.fromRGB(255, 50, 50), Visible = true})
-        lines[i] = l
-    end
-    lines[1].From = Vector2.new(cx-size, cy-size); lines[1].To = Vector2.new(cx-size/3, cy-size/3)
-    lines[2].From = Vector2.new(cx+size, cy-size); lines[2].To = Vector2.new(cx+size/3, cy-size/3)
-    lines[3].From = Vector2.new(cx-size, cy+size); lines[3].To = Vector2.new(cx-size/3, cy+size/3)
-    lines[4].From = Vector2.new(cx+size, cy+size); lines[4].To = Vector2.new(cx+size/3, cy+size/3)
-
-    spawn(function()
-        task.wait(0.3)
-        for _, l in ipairs(lines) do pcall(function() l:Remove() end) end
-    end)
-end
-
--- Детект стрельбы (безопасно)
+-- ==================== INPUT ====================
 local lastShoot = 0
 UIS.InputBegan:Connect(function(inp, gpe)
     if gpe then return end
@@ -333,15 +340,55 @@ UIS.InputBegan:Connect(function(inp, gpe)
                         local origin = handle and handle.Position or (ch.Head and ch.Head.Position)
                         if origin then
                             local target = Mouse.Hit.Position
-                            if CFG.MuzzleFlash then CreateMuzzleFlash(origin) end
-                            if CFG.BulletTrail then CreateBulletTrail(origin, target) end
-                            if CFG.HitMarker and Target then CreateHitMarker() end
+                            if CFG.MuzzleFlash then
+                                local flash = Instance.new("Part")
+                                flash.Size = Vector3.new(1.5,1.5,1.5); flash.Position = origin
+                                flash.Anchored = true; flash.CanCollide = false; flash.Shape = Enum.PartType.Ball
+                                flash.Material = Enum.Material.Neon; flash.Color = Color3.fromRGB(255,200,50)
+                                flash.Transparency = 0.3; flash.Parent = workspace
+                                local l = Instance.new("PointLight",flash); l.Color = flash.Color; l.Brightness = 8; l.Range = 15
+                                spawn(function()
+                                    for i=0,5 do pcall(function()
+                                        flash.Size = Vector3.new(1.5-i*0.25,1.5-i*0.25,1.5-i*0.25)
+                                        flash.Transparency = 0.3+i*0.14
+                                    end); task.wait(0.02) end
+                                    pcall(function() flash:Destroy() end)
+                                end)
+                            end
+                            if CFG.BulletTrail then
+                                local dir = (target-origin); local dist = dir.Magnitude
+                                if dist < 500 then
+                                    local mid = origin + dir/2
+                                    local trail = Instance.new("Part")
+                                    trail.Size = Vector3.new(0.15,0.15,dist)
+                                    trail.CFrame = CFrame.new(mid,target)
+                                    trail.Anchored = true; trail.CanCollide = false; trail.Material = Enum.Material.Neon
+                                    trail.Color = CFG.BulletTrailRainbow and Color3.fromHSV((tick()*0.3)%1,1,1) or CFG.BulletTrailColor
+                                    trail.Parent = workspace
+                                    local l = Instance.new("PointLight",trail); l.Color = trail.Color; l.Brightness = 2; l.Range = 6
+                                    spawn(function()
+                                        for i=0,10 do pcall(function() trail.Transparency = i/10 end); task.wait(0.02) end
+                                        pcall(function() trail:Destroy() end)
+                                    end)
+                                end
+                            end
+                            if CFG.HitMarker and Target then
+                                local size = 20; local cx = Cam.ViewportSize.X/2; local cy = Cam.ViewportSize.Y/2
+                                local lines = {}
+                                for i=1,4 do lines[i] = Draw("Line",{Thickness=2,Color=Color3.fromRGB(255,50,50),Visible=true}) end
+                                lines[1].From=Vector2.new(cx-size,cy-size); lines[1].To=Vector2.new(cx-size/3,cy-size/3)
+                                lines[2].From=Vector2.new(cx+size,cy-size); lines[2].To=Vector2.new(cx+size/3,cy-size/3)
+                                lines[3].From=Vector2.new(cx-size,cy+size); lines[3].To=Vector2.new(cx-size/3,cy+size/3)
+                                lines[4].From=Vector2.new(cx+size,cy+size); lines[4].To=Vector2.new(cx+size/3,cy+size/3)
+                                spawn(function() task.wait(0.3); for _,l in ipairs(lines) do pcall(function() l:Remove() end) end end)
+                            end
                         end
                     end
                 end
             end
         end
     end
+
     if CFG.AimKey == "MB2" and inp.UserInputType == Enum.UserInputType.MouseButton2 then Aiming = true end
     if CFG.AimKey == "MB1" and inp.UserInputType == Enum.UserInputType.MouseButton1 then Aiming = true end
     if CFG.AimKey == "Q" and inp.KeyCode == Enum.KeyCode.Q then Aiming = true end
@@ -355,9 +402,9 @@ UIS.InputEnded:Connect(function(inp)
     if CFG.AimKey == "E" and inp.KeyCode == Enum.KeyCode.E then Aiming = false end
 end)
 
-spawn(function() while Alive do if CFG.AutoPred then CFG.Pred = CalcPred() end; task.wait(1) end end)
+spawn(function() while Alive do if CFG.AutoPred then CFG.Pred = CalcPred() end; task.wait(0.5) end end)
 
--- ==================== HOOKS (безопасно) ====================
+-- ==================== HOOKS (HEAD ONLY) ====================
 local HookOK = false
 if hookmetamethod then
     pcall(function()
@@ -366,9 +413,14 @@ if hookmetamethod then
             if not Alive or not CFG.Enabled or not Aiming then return old(self, k) end
             local ok2, isMouse = pcall(function() return self == Mouse end)
             if not ok2 or not isMouse then return old(self, k) end
-            local pos = PredictPos(); if not pos then return old(self, k) end
+            local pos = PredictHeadPos(); if not pos then return old(self, k) end
             if k == "Hit" then return CFrame.new(pos) end
-            if k == "Target" then if Target and Target.Character then local p = Target.Character:FindFirstChild(CFG.Part); if p then return p end end end
+            if k == "Target" then
+                if Target and Target.Character then
+                    local head = Target.Character:FindFirstChild("Head")
+                    if head then return head end
+                end
+            end
             if k == "UnitRay" then return Ray.new(Cam.CFrame.Position, (pos-Cam.CFrame.Position).Unit) end
             if k == "X" then return (Cam:WorldToViewportPoint(pos)).X end
             if k == "Y" then return (Cam:WorldToViewportPoint(pos)).Y end
@@ -381,7 +433,7 @@ if hookmetamethod then
         old2 = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             if not Alive or not CFG.Enabled or not Aiming then return old2(self, ...) end
             local m = getnamecallmethod(); local a = {...}
-            local pos = PredictPos(); if not pos then return old2(self, ...) end
+            local pos = PredictHeadPos(); if not pos then return old2(self, ...) end
             if m == "Raycast" and self == workspace then
                 if typeof(a[1]) == "Vector3" then return old2(self, a[1], (pos-a[1]).Unit*5000, select(3, ...)) end
             end
@@ -396,7 +448,7 @@ if hookmetamethod then
     end)
 end
 
--- ==================== CHARACTER EFFECTS (ТОЛЬКО НА СЕБЯ) ====================
+-- ==================== EFFECTS ====================
 local function ClearEffect(name)
     if ActiveEffects[name] then pcall(function() ActiveEffects[name]:Destroy() end); ActiveEffects[name] = nil end
 end
@@ -503,8 +555,7 @@ local function CreateTrail()
     trail.Lifetime=1.2; trail.LightEmission=1; trail.FaceCamera=true
     trail.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0),NumberSequenceKeypoint.new(1,1)})
     trail.WidthScale=NumberSequence.new({NumberSequenceKeypoint.new(0,1.5),NumberSequenceKeypoint.new(1,0)})
-    trail.Color=ColorSequence.new(CFG.BulletTrailColor)
-    trail.Texture="rbxassetid://6823507655"
+    trail.Color=ColorSequence.new(CFG.BulletTrailColor); trail.Texture="rbxassetid://6823507655"
     a0.Parent=folder; a1.Parent=folder; trail.Parent=folder
     spawn(function() while Alive and ActiveEffects["Trail"] and CFG.Trail do
         if CFG.TrailRainbow then local h1=(tick()*0.3)%1; local h2=(h1+0.3)%1
@@ -580,6 +631,7 @@ local info = Draw("Text", {Size=16,Font=2,Outline=true,Position=Vector2.new(10,1
 local pingTxt = Draw("Text", {Size=12,Font=2,Outline=true,Position=Vector2.new(10,32),Color=Color3.fromRGB(180,180,200),Visible=false})
 local watermark = Draw("Text", {Size=18,Font=2,Outline=true,Color=Color3.fromRGB(255,55,85),Visible=true})
 local predLine = Draw("Line", {Thickness=2,Color=Color3.fromRGB(0,255,255),Transparency=0.6,Visible=false})
+local headDot = Draw("Circle", {Thickness=2,NumSides=16,Filled=true,Radius=4,Color=Color3.fromRGB(0,255,120),Transparency=1,Visible=false})
 
 local ESP = {}
 local function MakeESP(plr)
@@ -594,7 +646,7 @@ end
 local function KillESP(plr)
     local e=ESP[plr]; if not e then return end
     for _,v in pairs(e) do pcall(function() v:Remove() end) end
-    ESP[plr]=nil; VelHistory[plr]=nil
+    ESP[plr]=nil; VelHistory[plr]=nil; PosHistory[plr]=nil
 end
 
 -- ==================== RENDER ====================
@@ -608,8 +660,8 @@ local rc = RS.RenderStepped:Connect(function()
     if CFG.Enabled then GetTarget() else Target=nil end
 
     if watermark then
-        watermark.Position=Vector2.new(Cam.ViewportSize.X-200,10)
-        watermark.Text="DA HOOD SAFE v10"
+        watermark.Position=Vector2.new(Cam.ViewportSize.X-220,10)
+        watermark.Text="🎯 HEAD AIM v11"
         watermark.Color=CFG.RainbowFOV and rainbow or Color3.fromRGB(255,55,85)
         watermark.Visible=true
     end
@@ -620,32 +672,58 @@ local rc = RS.RenderStepped:Connect(function()
         fov.Color=CFG.RainbowFOV and rainbow or (Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,55,85))
     end
 
-    local pos = PredictPos()
+    -- Показываем куда целится (предикшн)
+    local pos = PredictHeadPos()
     if pos and CFG.Enabled then
         local sp,vis = Cam:WorldToViewportPoint(pos)
         if vis then
             if dot and CFG.ShowDot then dot.Position=Vector2.new(sp.X,sp.Y); dot.Color=Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,220,50); dot.Visible=true end
             if line and CFG.ShowLine then line.From=Vector2.new(cx,cy); line.To=Vector2.new(sp.X,sp.Y); line.Color=Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(100,100,120); line.Visible=true end
+
+            -- Показываем реальную позицию головы + предикшн линию
             if CFG.ShowPredPath and Target and Target.Character and predLine then
-                local cur = Target.Character:FindFirstChild(CFG.Part)
-                if cur then
-                    local csp,cv = Cam:WorldToViewportPoint(cur.Position)
-                    if cv then predLine.From=Vector2.new(csp.X,csp.Y); predLine.To=Vector2.new(sp.X,sp.Y); predLine.Visible=true
-                    else predLine.Visible=false end
+                local head = Target.Character:FindFirstChild("Head")
+                if head then
+                    local csp,cv = Cam:WorldToViewportPoint(head.Position)
+                    if cv then
+                        predLine.From=Vector2.new(csp.X,csp.Y); predLine.To=Vector2.new(sp.X,sp.Y); predLine.Visible=true
+
+                        -- Точка на реальной голове
+                        if headDot and CFG.ShowHeadDot then
+                            headDot.Position = Vector2.new(csp.X, csp.Y)
+                            headDot.Color = Color3.fromRGB(255, 100, 100)
+                            headDot.Visible = true
+                        end
+                    else
+                        predLine.Visible=false
+                        if headDot then headDot.Visible=false end
+                    end
                 end
+            else
+                if predLine then predLine.Visible=false end
+                if headDot then headDot.Visible=false end
             end
         else
-            if dot then dot.Visible=false end; if line then line.Visible=false end; if predLine then predLine.Visible=false end
+            if dot then dot.Visible=false end; if line then line.Visible=false end
+            if predLine then predLine.Visible=false end; if headDot then headDot.Visible=false end
         end
     else
-        if dot then dot.Visible=false end; if line then line.Visible=false end; if predLine then predLine.Visible=false end
+        if dot then dot.Visible=false end; if line then line.Visible=false end
+        if predLine then predLine.Visible=false end; if headDot then headDot.Visible=false end
     end
 
     if info then
-        if CFG.Enabled then info.Text=(Aiming and "LOCKED" or "SCANNING").."  "..(Target and Target.Name or "-"); info.Color=Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,220,50); info.Visible=true
+        if CFG.Enabled then
+            local vel = Target and GetSmoothedVel(Target).Magnitude or 0
+            info.Text=(Aiming and "🎯 LOCKED" or "🔍 SCAN").."  HEAD  "..(Target and Target.Name or "-").." | Vel: "..string.format("%.1f",vel)
+            info.Color=Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,220,50)
+            info.Visible=true
         else info.Visible=false end
     end
-    if pingTxt then pingTxt.Text="Ping: "..math.floor(GetPing()).."ms | Pred: "..string.format("%.3fs",CFG.Pred); pingTxt.Visible=CFG.Enabled end
+    if pingTxt then
+        pingTxt.Text="Ping: "..math.floor(GetPing()).."ms | Pred: "..string.format("%.3fs",CFG.Pred).." | Offset: "..string.format("%.2f",CFG.HeadOffset)
+        pingTxt.Visible=CFG.Enabled
+    end
 
     for plr,e in pairs(ESP) do
         if not plr or not plr.Parent then KillESP(plr)
@@ -684,7 +762,7 @@ local Th = {
 }
 
 local Main=Instance.new("Frame")
-Main.Size=UDim2.new(0,480,0,560); Main.Position=UDim2.new(0.5,-240,0.5,-280)
+Main.Size=UDim2.new(0,500,0,580); Main.Position=UDim2.new(0.5,-250,0.5,-290)
 Main.BackgroundColor3=Th.bg; Main.BorderSizePixel=0; Main.ClipsDescendants=true
 Main.Active=true; Main.Draggable=true; Main.Parent=G
 Instance.new("UICorner",Main).CornerRadius=UDim.new(0,14)
@@ -698,12 +776,12 @@ local tf=Instance.new("Frame"); tf.Size=UDim2.new(1,0,0,14); tf.Position=UDim2.n
 tf.BackgroundColor3=Color3.fromRGB(14,14,22); tf.BorderSizePixel=0; tf.Parent=topBar
 
 local logo=Instance.new("TextLabel"); logo.Size=UDim2.new(0,300,1,0); logo.Position=UDim2.new(0,16,0,0)
-logo.BackgroundTransparency=1; logo.Text="🛡️ DA HOOD SAFE"; logo.TextColor3=Th.accent
+logo.BackgroundTransparency=1; logo.Text="🎯 HEAD AIM PRO"; logo.TextColor3=Th.accent
 logo.Font=Enum.Font.GothamBlack; logo.TextSize=15; logo.TextXAlignment=Enum.TextXAlignment.Left; logo.Parent=topBar
 
 local ver=Instance.new("TextLabel"); ver.Size=UDim2.new(0,50,0,20); ver.Position=UDim2.new(1,-70,0.5,-10)
 ver.BackgroundColor3=Th.accent; ver.TextColor3=Color3.new(1,1,1); ver.Font=Enum.Font.GothamBold
-ver.TextSize=10; ver.Text="v10"; ver.BorderSizePixel=0; ver.Parent=topBar
+ver.TextSize=10; ver.Text="v11"; ver.BorderSizePixel=0; ver.Parent=topBar
 Instance.new("UICorner",ver).CornerRadius=UDim.new(1,0)
 
 local tabBar=Instance.new("Frame"); tabBar.Size=UDim2.new(1,-20,0,36); tabBar.Position=UDim2.new(0,10,0,54)
@@ -711,7 +789,7 @@ tabBar.BackgroundColor3=Th.card; tabBar.BorderSizePixel=0; tabBar.Parent=Main
 Instance.new("UICorner",tabBar).CornerRadius=UDim.new(0,8)
 Instance.new("UIListLayout",tabBar).FillDirection=Enum.FillDirection.Horizontal
 
-local allTabs={"Aim","Advanced","Bullets","ESP","Effects","Info"}
+local allTabs={"Aim","Precision","Bullets","ESP","Effects","Info"}
 local tabFrames={}; local tabButtons={}
 
 for _,tn in ipairs(allTabs) do
@@ -808,13 +886,11 @@ end
 
 -- BUILD TABS
 local aim=tabFrames["Aim"]
-Sep(aim,"Aimbot")
+Sep(aim,"🎯 HEAD AIM (Only Head)")
 Toggle(aim,"Silent Aim","Enabled","🎯")
 Toggle(aim,"Auto Prediction","AutoPred","⚡")
 Slider(aim,"FOV","FOV",30,500)
-Slider(aim,"Prediction","Pred",0.05,0.5,3)
-Sep(aim,"Hit Part")
-BtnRow(aim,{{name="HEAD",col=Color3.fromRGB(200,40,60),cb=function() CFG.Part="Head" end},{name="TORSO",col=Color3.fromRGB(40,80,200),cb=function() CFG.Part="UpperTorso" end},{name="ROOT",col=Color3.fromRGB(80,80,100),cb=function() CFG.Part="HumanoidRootPart" end}})
+Slider(aim,"Prediction","Pred",0.05,0.4,3)
 Sep(aim,"Aim Key")
 BtnRow(aim,{{name="RMB",col=Th.card,cb=function() CFG.AimKey="MB2" end},{name="LMB",col=Th.card,cb=function() CFG.AimKey="MB1" end},{name="Q",col=Th.card,cb=function() CFG.AimKey="Q" end},{name="E",col=Th.card,cb=function() CFG.AimKey="E" end}})
 Sep(aim,"Filters")
@@ -823,19 +899,40 @@ Toggle(aim,"Ignore Downed","NoDowned","💀")
 Toggle(aim,"Ignore Cuffed","NoCuffed","🔗")
 Toggle(aim,"Ignore Walls","IgnoreWalls","🧱")
 
-local adv=tabFrames["Advanced"]
-Sep(adv,"Smart Prediction")
-Toggle(adv,"Smart Velocity","SmartPrediction","🧠")
-Toggle(adv,"Predict Jump","PredictJump","🦘")
-Toggle(adv,"Predict Fall","PredictFall","⬇️")
-Slider(adv,"Velocity Comp","VelocityComp",0.5,2,2)
-Sep(adv,"Target Priority")
-BtnRow(adv,{{name="Distance",col=Color3.fromRGB(40,120,200),cb=function() CFG.TargetPriority="Distance" end},{name="Low HP",col=Color3.fromRGB(200,40,60),cb=function() CFG.TargetPriority="HP" end}})
-Sep(adv,"Visuals")
-Toggle(adv,"Prediction Path","ShowPredPath","📐")
+local prec=tabFrames["Precision"]
+Sep(prec,"🎯 Precision Settings")
+Toggle(prec,"Smart Prediction","SmartPrediction","🧠")
+Toggle(prec,"Predict Jump","PredictJump","🦘")
+Toggle(prec,"Predict Fall","PredictFall","⬇️")
+Toggle(prec,"Use Acceleration","UseAccel","📈")
+Toggle(prec,"Ping Compensation","UsePingComp","🌐")
+Toggle(prec,"Resolver","ResolverEnabled","🔧")
+Sep(prec,"Fine Tune")
+Slider(prec,"Head Offset (Y)","HeadOffset",-1,1,2)
+Slider(prec,"Velocity Comp","VelocityComp",0.5,2,2)
+Slider(prec,"Ping Multiplier","PingMultiplier",0.5,2,2)
+Slider(prec,"Velocity Smoothing","VelocitySmoothing",0,1,2)
+Slider(prec,"Max Prediction","MaxPrediction",0.1,0.5,2)
+Sep(prec,"Target Priority")
+BtnRow(prec,{{name="Distance",col=Color3.fromRGB(40,120,200),cb=function() CFG.TargetPriority="Distance" end},{name="Low HP",col=Color3.fromRGB(200,40,60),cb=function() CFG.TargetPriority="HP" end}})
+Sep(prec,"Presets")
+BtnRow(prec,{
+    {name="💯 PERFECT",col=Color3.fromRGB(0,180,80),cb=function()
+        CFG.SmartPrediction=true; CFG.PredictJump=true; CFG.PredictFall=true
+        CFG.UseAccel=true; CFG.UsePingComp=true; CFG.ResolverEnabled=true
+        CFG.VelocityComp=1.0; CFG.PingMultiplier=1.0; CFG.VelocitySmoothing=0.6
+        CFG.HeadOffset=0; CFG.MaxPrediction=0.35; CFG.AutoPred=true
+        Notify("Preset","Perfect settings applied",2)
+    end},
+    {name="⚡ FAST",col=Color3.fromRGB(200,150,0),cb=function()
+        CFG.SmartPrediction=false; CFG.UseAccel=false
+        CFG.VelocitySmoothing=0.3; CFG.PingMultiplier=1.0
+        Notify("Preset","Fast (lower latency)",2)
+    end},
+})
 
 local bul=tabFrames["Bullets"]
-Sep(bul,"🔫 Bullet Effects (SAFE)")
+Sep(bul,"🔫 Bullet Effects")
 Toggle(bul,"Bullet Trail","BulletTrail","💫")
 Toggle(bul,"Rainbow Trail","BulletTrailRainbow","🌈")
 Toggle(bul,"Muzzle Flash","MuzzleFlash","🔥")
@@ -851,10 +948,12 @@ Sep(espT,"Aim Visuals")
 Toggle(espT,"FOV Circle","ShowFOV","⭕")
 Toggle(espT,"Target Dot","ShowDot","🔴")
 Toggle(espT,"Target Line","ShowLine","📍")
+Toggle(espT,"Prediction Path","ShowPredPath","📐")
+Toggle(espT,"Head Marker","ShowHeadDot","🎯")
 Toggle(espT,"Rainbow FOV","RainbowFOV","🌈")
 
 local fx=tabFrames["Effects"]
-Sep(fx,"Character Effects (SELF)")
+Sep(fx,"Character Effects")
 Toggle(fx,"Wings","Wings","🪽")
 BtnRow(fx,{
     {name="Angel",col=Color3.fromRGB(255,215,0),cb=function() CFG.WingStyle="Angel"; ClearEffect("Wings") end},
@@ -870,28 +969,13 @@ Toggle(fx,"Rainbow Trail","TrailRainbow","🌈")
 Toggle(fx,"Rings","FloatingRings","💫")
 Toggle(fx,"Orbs","Orbs","🔮")
 Toggle(fx,"Rainbow All","AuraRainbow","🌈")
-Sep(fx,"Presets")
-BtnRow(fx,{
-    {name="👑 GOD",col=Color3.fromRGB(255,100,50),cb=function()
-        CFG.Wings=true; CFG.WingStyle="Rainbow"; CFG.Aura=true; CFG.AuraRainbow=true
-        CFG.Trail=true; CFG.TrailRainbow=true; CFG.Halo=true; CFG.BodyGlow=true
-        CFG.FloatingRings=true; CFG.Orbs=true; CFG.BulletTrail=true; CFG.BulletTrailRainbow=true
-        CFG.MuzzleFlash=true; CFG.HitMarker=true
-        UpdateEffects(); Notify("GOD MODE","All effects on!",3)
-    end},
-    {name="❌ OFF",col=Color3.fromRGB(80,80,80),cb=function()
-        for _,k in ipairs({"Wings","Aura","Trail","Halo","BodyGlow","FloatingRings","Orbs","AuraRainbow","TrailRainbow","BulletTrail","MuzzleFlash","HitMarker","BulletTrailRainbow"}) do CFG[k]=false end
-        ClearAll(); Notify("Effects","All off",2)
-    end},
-})
 
 local infoT=tabFrames["Info"]
-Sep(infoT,"⚠️ Anti-Kick Info")
-local warn1=Instance.new("TextLabel"); warn1.Size=UDim2.new(1,0,0,100); warn1.BackgroundColor3=Color3.fromRGB(60,20,20)
-warn1.TextColor3=Color3.new(1,1,1); warn1.Font=Enum.Font.Gotham; warn1.TextSize=11; warn1.TextWrapped=true
-warn1.Text="🛡️ БЕЗОПАСНАЯ ВЕРСИЯ\n\nУбраны опасные функции:\n❌ Hitbox Expander (кикает)\n❌ Kill Effects на игроков\n❌ Impact Effects (много объектов)\n❌ Изменение тел игроков\n\nОставлены безопасные:\n✅ Silent Aim через Mouse.Hit\n✅ ESP только Drawing\n✅ Эффекты только на СЕБЯ\n✅ Bullet trail (свои пули)"
-warn1.BorderSizePixel=0; warn1.Parent=infoT
-Instance.new("UICorner",warn1).CornerRadius=UDim.new(0,8)
+Sep(infoT,"How to use")
+local hlp=Instance.new("TextLabel"); hlp.Size=UDim2.new(1,0,0,140); hlp.BackgroundColor3=Th.card
+hlp.TextColor3=Color3.new(1,1,1); hlp.Font=Enum.Font.Gotham; hlp.TextSize=11; hlp.TextWrapped=true
+hlp.Text="🎯 ТОЛЬКО ГОЛОВА (Head Only)\n\n💯 Для максимальной точности:\n1. Включи PERFECT в Precision tab\n2. Проверь Auto Prediction\n3. Настрой Head Offset если чуть выше/ниже\n\nCyan линия = предсказанная позиция\nКрасная точка = реальная голова\nЗеленая точка = куда попадёшь\n\nЕсли промахиваешь высоко → Head Offset -0.1\nЕсли промахиваешь низко → Head Offset +0.1"
+hlp.BorderSizePixel=0; hlp.Parent=infoT; Instance.new("UICorner",hlp).CornerRadius=UDim.new(0,8)
 
 Sep(infoT,"Status")
 local sf=Instance.new("Frame"); sf.Size=UDim2.new(1,0,0,70); sf.BackgroundColor3=Th.card; sf.BorderSizePixel=0; sf.Parent=infoT
@@ -903,7 +987,14 @@ hl.TextColor3=HookOK and Th.green or Th.accent; hl.Parent=sf
 local pl=Instance.new("TextLabel"); pl.Size=UDim2.new(0.5,-14,0,22); pl.Position=UDim2.new(0.5,0,0,8)
 pl.BackgroundTransparency=1; pl.Font=Enum.Font.Gotham; pl.TextSize=11
 pl.TextColor3=Th.dim; pl.TextXAlignment=Enum.TextXAlignment.Right; pl.Parent=sf
-spawn(function() while Alive do pl.Text="Ping: "..math.floor(GetPing()).."ms"; task.wait(1) end end)
+local tl=Instance.new("TextLabel"); tl.Size=UDim2.new(1,-28,0,20); tl.Position=UDim2.new(0,14,0,32)
+tl.BackgroundTransparency=1; tl.Font=Enum.Font.Gotham; tl.TextSize=10
+tl.TextColor3=Th.dim; tl.TextXAlignment=Enum.TextXAlignment.Left; tl.Parent=sf
+spawn(function() while Alive do
+    pl.Text="Ping: "..math.floor(GetPing()).."ms"
+    local vel = Target and GetSmoothedVel(Target).Magnitude or 0
+    tl.Text="Target: "..(Target and Target.Name or "none").." | Vel: "..string.format("%.1f",vel)
+    task.wait(0.5) end end)
 
 Sep(infoT,"Controls")
 local ct=Instance.new("TextLabel"); ct.Size=UDim2.new(1,0,0,60); ct.BackgroundColor3=Th.card
@@ -923,16 +1014,16 @@ spawn(function()
             Alive=false; ClearAll()
             pcall(function() rc:Disconnect() end)
             for p in pairs(ESP) do KillESP(p) end
-            for _,o in pairs({fov,dot,line,info,pingTxt,watermark,predLine}) do if o then pcall(function() o:Remove() end) end end
+            for _,o in pairs({fov,dot,line,info,pingTxt,watermark,predLine,headDot}) do if o then pcall(function() o:Remove() end) end end
             if G then pcall(function() G:Destroy() end) end
-            Notify("Da Hood Safe","Unloaded",2); break
+            Notify("Head Aim","Unloaded",2); break
         end
         task.wait(0.5)
     end
 end)
 
-Notify("Da Hood Safe v10","Anti-kick version loaded",3)
-print("=== DA HOOD SAFE v10 ===")
+Notify("Head Aim v11","PRO precision loaded",3)
+print("=== HEAD AIM PRO v11 ===")
 print("Hook: "..(HookOK and "OK" or "FAIL"))
-print("SAFE VERSION - no kicks")
+print("HEAD ONLY - Max Precision")
 print("========================")
