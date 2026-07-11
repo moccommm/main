@@ -1,6 +1,6 @@
 -- ===============================================
 --   Da Hood SILENT AIM v15F + AUTO PREDICTION
---   Solara | hookmetamethod | Auto-Pred System
+--   FIXED: no recursion, cached prediction
 -- ===============================================
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -30,14 +30,12 @@ local CFG = {
     IgnoreWalls = true,
     HitPart = "Head",
 
-    -- AUTO PREDICTION (главное новшество)
-    AutoPrediction = true,      -- включить авто-pred
-    AutoPredMin = 0.08,         -- минимальный pred
-    AutoPredMax = 0.22,         -- максимальный pred
-    AutoPredLearning = 0.15,    -- скорость обучения (0.05-0.3)
-    AutoPredShowDebug = true,   -- показывать отладку
+    AutoPrediction = true,
+    AutoPredMin = 0.08,
+    AutoPredMax = 0.22,
+    AutoPredLearning = 0.15,
+    AutoPredShowDebug = true,
 
-    -- Ручной pred (если AutoPrediction = false)
     BasePred = 0.145,
     MaxPred = 0.165,
     DistancePrediction = true,
@@ -90,152 +88,108 @@ local SilentMethod = "NONE"
 local silentActive = false
 local oldNamecall = nil
 
--- ==================== AUTO PREDICTION SYSTEM ====================
---[[
-    Как работает:
-    1. Запоминаем где была голова ДО выстрела
-    2. Запоминаем время выстрела
-    3. Через bulletTravelTime проверяем где РЕАЛЬНО оказалась голова
-    4. Считаем ошибку (error) = реальная_позиция - предсказанная_позиция
-    5. Корректируем pred в сторону уменьшения ошибки
-    
-    Это называется online learning / gradient descent
-]]
+-- КРИТИЧЕСКИ ВАЖНО: кэш предсказания и флаг рекурсии
+local cachedPrediction = nil
+local inHook = false
 
+-- ==================== AUTO PREDICTION ====================
 local AutoPred = {
-    currentPred = 0.145,        -- текущее значение pred
-    errorHistory = {},          -- история ошибок
-    shotHistory = {},           -- история выстрелов
+    currentPred = 0.145,
+    errorHistory = {},
+    shotHistory = {},
     totalShots = 0,
     hits = 0,
     avgError = 0,
     lastAdjust = 0,
-    isLearning = false,
 }
 
--- Записываем выстрел
 local function RecordShot(targetPlayer, predictedPos, shotTime)
     if not targetPlayer or not targetPlayer.Character then return end
-    local head = targetPlayer.Character:FindFirstChild("Head")
-    if not head then return end
-
+    local ok, head = pcall(function()
+        return targetPlayer.Character:FindFirstChild("Head")
+    end)
+    if not ok or not head then return end
     table.insert(AutoPred.shotHistory, {
         player = targetPlayer,
         predicted = predictedPos,
         shotTime = shotTime,
-        travelTime = 0, -- будет вычислено позже
     })
-
-    -- Ограничиваем историю
     if #AutoPred.shotHistory > 20 then
         table.remove(AutoPred.shotHistory, 1)
     end
 end
 
--- Анализируем выстрелы и корректируем pred
 local function AnalyzeAndAdjust()
     local now = tick()
     if now - AutoPred.lastAdjust < 0.5 then return end
     AutoPred.lastAdjust = now
-
     local toRemove = {}
     local totalError = 0
     local errorCount = 0
-
     for i, shot in ipairs(AutoPred.shotHistory) do
         local age = now - shot.shotTime
-
-        -- Проверяем через ~0.1-0.3 секунды после выстрела
         if age > 0.08 and age < 0.5 then
-            local plr = shot.player
-            if plr and plr.Character then
+            local ok, result = pcall(function()
+                local plr = shot.player
+                if not plr or not plr.Character then return end
                 local head = plr.Character:FindFirstChild("Head")
-                if head then
-                    local actualPos = head.Position
-                    local predictedPos = shot.predicted
-
-                    -- Горизонтальная ошибка (X и Z)
-                    local errorVec = actualPos - predictedPos
-                    local horizError = Vector3.new(errorVec.X, 0, errorVec.Z)
-                    local errorMag = horizError.Magnitude
-
-                    -- Если ошибка небольшая (реалистичная) - учимся
-                    if errorMag < 30 then
-                        -- Знак ошибки: если голова дальше чем предсказали - pred мал
-                        -- Нам нужно понять: мы стреляли вперёд движения или нет
-                        local root = plr.Character:FindFirstChild("HumanoidRootPart")
-                        if root then
-                            local vel = root.AssemblyLinearVelocity
-                            local velMag = Vector3.new(vel.X, 0, vel.Z).Magnitude
-
-                            if velMag > 2 then
-                                -- Проекция ошибки на направление движения
-                                local velDir = Vector3.new(vel.X, 0, vel.Z).Unit
-                                local errorProj = horizError:Dot(velDir)
-
-                                -- errorProj > 0 означает: цель ДАЛЬШЕ чем мы думали
-                                -- значит pred нужно увеличить
-                                -- errorProj < 0 означает: мы перестреляли
-                                -- значит pred нужно уменьшить
-
-                                local correction = errorProj / (velMag + 0.01)
-                                totalError = totalError + correction
-                                errorCount = errorCount + 1
-
-                                table.insert(toRemove, i)
-                            end
+                if not head then return end
+                local actualPos = head.Position
+                local predictedPos = shot.predicted
+                local errorVec = actualPos - predictedPos
+                local horizError = Vector3.new(errorVec.X, 0, errorVec.Z)
+                local errorMag = horizError.Magnitude
+                if errorMag < 30 then
+                    local root = plr.Character:FindFirstChild("HumanoidRootPart")
+                    if root then
+                        local vel = root.AssemblyLinearVelocity
+                        local velMag = Vector3.new(vel.X, 0, vel.Z).Magnitude
+                        if velMag > 2 then
+                            local velDir = Vector3.new(vel.X, 0, vel.Z).Unit
+                            local errorProj = horizError:Dot(velDir)
+                            local correction = errorProj / (velMag + 0.01)
+                            totalError = totalError + correction
+                            errorCount = errorCount + 1
                         end
                     end
                 end
-            end
+            end)
+            table.insert(toRemove, i)
         elseif age >= 0.5 then
             table.insert(toRemove, i)
         end
     end
-
-    -- Удаляем обработанные выстрелы (в обратном порядке)
     for i = #toRemove, 1, -1 do
         table.remove(AutoPred.shotHistory, toRemove[i])
     end
-
-    -- Применяем коррекцию
     if errorCount > 0 then
         AutoPred.avgError = totalError / errorCount
         local alpha = CFG.AutoPredLearning
-
-        -- Gradient step: двигаемся в сторону уменьшения ошибки
         local correction = AutoPred.avgError * alpha * 0.01
-
         AutoPred.currentPred = math.clamp(
             AutoPred.currentPred + correction,
             CFG.AutoPredMin,
             CFG.AutoPredMax
         )
-
         table.insert(AutoPred.errorHistory, {
             error = AutoPred.avgError,
             pred = AutoPred.currentPred,
             time = now
         })
-
         if #AutoPred.errorHistory > 50 then
             table.remove(AutoPred.errorHistory, 1)
         end
     end
 end
 
--- Получить текущий pred (авто или ручной)
 local function GetCurrentPred(distance)
     if CFG.AutoPrediction then
-        -- Авто pred уже адаптирован
-        -- Небольшая дистанционная поправка поверх авто значения
         local distBonus = 0
         if distance > 100 then
             distBonus = (distance - 100) / 3000
         end
         return math.clamp(AutoPred.currentPred + distBonus, CFG.AutoPredMin, CFG.AutoPredMax)
     else
-        -- Ручной pred
         if CFG.DistancePrediction then
             local t = math.clamp(distance / CFG.DistanceScale, 0, 1)
             return CFG.BasePred + (CFG.MaxPred - CFG.BasePred) * t
@@ -244,11 +198,10 @@ local function GetCurrentPred(distance)
     end
 end
 
--- Фоновый анализ
 task.spawn(function()
     while Alive do
         if CFG.AutoPrediction then
-            AnalyzeAndAdjust()
+            pcall(AnalyzeAndAdjust)
         end
         task.wait(0.1)
     end
@@ -281,7 +234,9 @@ local function Draw(t, p)
 end
 
 local function Tw(obj, props, dur)
-    TS:Create(obj, TweenInfo.new(dur or 0.3, Enum.EasingStyle.Quint), props):Play()
+    pcall(function()
+        TS:Create(obj, TweenInfo.new(dur or 0.3, Enum.EasingStyle.Quint), props):Play()
+    end)
 end
 
 -- ==================== TRACKING ====================
@@ -289,7 +244,6 @@ local function UpdateHistory(plr, pos, vel)
     if not VelHistory[plr] then VelHistory[plr] = {} end
     if not PosHistory[plr] then PosHistory[plr] = {} end
     local t = tick()
-
     if #PosHistory[plr] > 0 then
         local lastPos = PosHistory[plr][#PosHistory[plr]].pos
         local lastTime = PosHistory[plr][#PosHistory[plr]].time
@@ -302,7 +256,6 @@ local function UpdateHistory(plr, pos, vel)
             end
         end
     end
-
     table.insert(VelHistory[plr], {vel = vel, time = t})
     table.insert(PosHistory[plr], {pos = pos, time = t})
     while #VelHistory[plr] > 12 do table.remove(VelHistory[plr], 1) end
@@ -331,10 +284,12 @@ local function IsValid(plr)
     if not plr or plr == LP or not plr.Parent then return false end
     local ch = plr.Character
     if not ch then return false end
-    local hum = ch:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return false end
-    local hitPart = ch:FindFirstChild(CFG.HitPart) or ch:FindFirstChild("Head")
-    if not hitPart then return false end
+    local ok1, hum = pcall(function() return ch:FindFirstChildOfClass("Humanoid") end)
+    if not ok1 or not hum or hum.Health <= 0 then return false end
+    local ok2, hitPart = pcall(function()
+        return ch:FindFirstChild(CFG.HitPart) or ch:FindFirstChild("Head")
+    end)
+    if not ok2 or not hitPart then return false end
     if CFG.TeamCheck then
         local ok, same = pcall(function()
             return plr.Team and LP.Team and plr.Team == LP.Team
@@ -366,10 +321,13 @@ end
 
 -- ==================== TARGET ====================
 local function GetMyPos()
-    local ch = LP.Character
-    if not ch then return nil end
-    local root = ch:FindFirstChild("HumanoidRootPart")
-    return root and root.Position
+    local ok, pos = pcall(function()
+        local ch = LP.Character
+        if not ch then return nil end
+        local root = ch:FindFirstChild("HumanoidRootPart")
+        return root and root.Position
+    end)
+    return ok and pos or nil
 end
 
 local function GetTarget()
@@ -380,27 +338,27 @@ local function GetTarget()
     local cy = Cam.ViewportSize.Y / 2
     for _, p in ipairs(Players:GetPlayers()) do
         if IsValid(p) then
-            local ch = p.Character
-            local hitPart = ch:FindFirstChild(CFG.HitPart) or ch:FindFirstChild("Head")
-            if hitPart then
+            local ok, data = pcall(function()
+                local ch = p.Character
+                local hitPart = ch:FindFirstChild(CFG.HitPart) or ch:FindFirstChild("Head")
+                if not hitPart then return nil end
                 local sp, vis = Cam:WorldToViewportPoint(hitPart.Position)
-                if vis and sp.Z > 0 then
-                    local sd = math.sqrt((sp.X - cx)^2 + (sp.Y - cy)^2)
-                    if sd <= CFG.FOV then
-                        local worldDist = (myPos - hitPart.Position).Magnitude
-                        local hp = 100
-                        pcall(function()
-                            hp = ch:FindFirstChildOfClass("Humanoid").Health
-                        end)
-                        local root = ch:FindFirstChild("HumanoidRootPart")
-                        if root then
-                            UpdateHistory(p, hitPart.Position, root.AssemblyLinearVelocity)
-                        end
-                        table.insert(cands, {
-                            player = p, sd = sd, hp = hp, dist = worldDist
-                        })
-                    end
+                if not vis or sp.Z <= 0 then return nil end
+                local sd = math.sqrt((sp.X - cx)^2 + (sp.Y - cy)^2)
+                if sd > CFG.FOV then return nil end
+                local worldDist = (myPos - hitPart.Position).Magnitude
+                local hp = 100
+                pcall(function()
+                    hp = ch:FindFirstChildOfClass("Humanoid").Health
+                end)
+                local root = ch:FindFirstChild("HumanoidRootPart")
+                if root then
+                    UpdateHistory(p, hitPart.Position, root.AssemblyLinearVelocity)
                 end
+                return {player = p, sd = sd, hp = hp, dist = worldDist}
+            end)
+            if ok and data then
+                table.insert(cands, data)
             end
         end
     end
@@ -417,95 +375,77 @@ end
 -- ==================== PREDICTION ====================
 local function PredictHeadPos()
     if not Target then return nil end
-    local ch = Target.Character
-    if not ch then return nil end
-    local hitPart = ch:FindFirstChild(CFG.HitPart) or ch:FindFirstChild("Head")
-    if not hitPart then return nil end
-    local root = ch:FindFirstChild("HumanoidRootPart")
-    if not root then return hitPart.Position end
-    local headPos = hitPart.Position
-    local myPos = GetMyPos()
-    if not myPos then return headPos end
-    local distance = (myPos - headPos).Magnitude
-    local rawVel = root.AssemblyLinearVelocity
-
-    -- Velocity
-    local finalVel
-    if CFG.SmartPrediction then
-        local smoothVel = GetSmoothedVel(Target)
-        if smoothVel.Magnitude > 1 then
-            local alpha = CFG.VelocitySmoothing
-            finalVel = rawVel * (1 - alpha) + smoothVel * alpha
+    local ok, result = pcall(function()
+        local ch = Target.Character
+        if not ch then return nil end
+        local hitPart = ch:FindFirstChild(CFG.HitPart) or ch:FindFirstChild("Head")
+        if not hitPart then return nil end
+        local root = ch:FindFirstChild("HumanoidRootPart")
+        if not root then return hitPart.Position end
+        local headPos = hitPart.Position
+        local myPos = GetMyPos()
+        if not myPos then return headPos end
+        local distance = (myPos - headPos).Magnitude
+        local rawVel = root.AssemblyLinearVelocity
+        local finalVel
+        if CFG.SmartPrediction then
+            local smoothVel = GetSmoothedVel(Target)
+            if smoothVel.Magnitude > 1 then
+                local alpha = CFG.VelocitySmoothing
+                finalVel = rawVel * (1 - alpha) + smoothVel * alpha
+            else
+                finalVel = rawVel
+            end
         else
             finalVel = rawVel
         end
-    else
-        finalVel = rawVel
-    end
-    finalVel = finalVel * CFG.VelocityComp
-
-    -- Стоит на месте - нет предсказания
-    if finalVel.Magnitude < 1.5 then
-        return headPos + Vector3.new(0, CFG.HeadOffset, 0)
-    end
-
-    -- Prediction time (АВТО или РУЧНОЙ)
-    local basePred = GetCurrentPred(distance)
-
-    -- Ping
-    if CFG.PingComp then
-        basePred = basePred + (GetPing() / 1000) * 0.5
-    end
-
-    -- Bullet travel
-    local bulletTime = distance / CFG.BulletSpeed
-    local totalPred = basePred + bulletTime
-
-    -- Базовая prediction (горизонталь)
-    local predicted = Vector3.new(
-        headPos.X + finalVel.X * totalPred,
-        headPos.Y,
-        headPos.Z + finalVel.Z * totalPred
-    )
-
-    -- Вертикаль с физикой
-    local hum = ch:FindFirstChildOfClass("Humanoid")
-    if hum then
-        local state = hum:GetState()
-        local gravity = workspace.Gravity or 196.2
-        if state == Enum.HumanoidStateType.Jumping and CFG.PredictJump then
-            local vy = rawVel.Y
-            local yOffset = vy * totalPred - 0.5 * gravity * totalPred * totalPred
-            predicted = Vector3.new(predicted.X, headPos.Y + yOffset, predicted.Z)
-        elseif state == Enum.HumanoidStateType.Freefall and CFG.PredictFall then
-            local vy = rawVel.Y
-            local yOffset = vy * totalPred - 0.5 * gravity * totalPred * totalPred
-            predicted = Vector3.new(predicted.X, headPos.Y + yOffset, predicted.Z)
-        else
-            predicted = Vector3.new(predicted.X, headPos.Y + finalVel.Y * totalPred * 0.3, predicted.Z)
+        finalVel = finalVel * CFG.VelocityComp
+        if finalVel.Magnitude < 1.5 then
+            return headPos + Vector3.new(0, CFG.HeadOffset, 0)
         end
-    end
-
-    -- Bullet drop
-    if CFG.BulletDrop > 0 and distance > 50 then
-        local gravity = workspace.Gravity or 196.2
-        local drop = 0.5 * gravity * bulletTime * bulletTime * CFG.BulletDrop
-        predicted = predicted + Vector3.new(0, drop, 0)
-    end
-
-    -- Head offset
-    predicted = predicted + Vector3.new(0, CFG.HeadOffset, 0)
-
-    -- Sanity check
-    if CFG.ResolverEnabled then
-        local predOffset = predicted - headPos
-        local maxDist = finalVel.Magnitude * totalPred * 1.5 + 10
-        if predOffset.Magnitude > maxDist then
-            predicted = headPos + predOffset.Unit * maxDist
+        local basePred = GetCurrentPred(distance)
+        if CFG.PingComp then
+            basePred = basePred + (GetPing() / 1000) * 0.5
         end
-    end
-
-    return predicted
+        local bulletTime = distance / CFG.BulletSpeed
+        local totalPred = basePred + bulletTime
+        local predicted = Vector3.new(
+            headPos.X + finalVel.X * totalPred,
+            headPos.Y,
+            headPos.Z + finalVel.Z * totalPred
+        )
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        if hum then
+            local state = hum:GetState()
+            local gravity = workspace.Gravity or 196.2
+            if state == Enum.HumanoidStateType.Jumping and CFG.PredictJump then
+                local vy = rawVel.Y
+                local yOffset = vy * totalPred - 0.5 * gravity * totalPred * totalPred
+                predicted = Vector3.new(predicted.X, headPos.Y + yOffset, predicted.Z)
+            elseif state == Enum.HumanoidStateType.Freefall and CFG.PredictFall then
+                local vy = rawVel.Y
+                local yOffset = vy * totalPred - 0.5 * gravity * totalPred * totalPred
+                predicted = Vector3.new(predicted.X, headPos.Y + yOffset, predicted.Z)
+            else
+                predicted = Vector3.new(predicted.X, headPos.Y + finalVel.Y * totalPred * 0.3, predicted.Z)
+            end
+        end
+        if CFG.BulletDrop > 0 and distance > 50 then
+            local gravity = workspace.Gravity or 196.2
+            local drop = 0.5 * gravity * bulletTime * bulletTime * CFG.BulletDrop
+            predicted = predicted + Vector3.new(0, drop, 0)
+        end
+        predicted = predicted + Vector3.new(0, CFG.HeadOffset, 0)
+        if CFG.ResolverEnabled then
+            local predOffset = predicted - headPos
+            local maxDist = finalVel.Magnitude * totalPred * 1.5 + 10
+            if predOffset.Magnitude > maxDist then
+                predicted = headPos + predOffset.Unit * maxDist
+            end
+        end
+        return predicted
+    end)
+    if ok then return result else return nil end
 end
 
 -- ==================== SILENT AIM HOOK ====================
@@ -523,37 +463,56 @@ local function GetSilentDirection(origin, predictedPos, originalDir)
     return dir
 end
 
+-- Обновляем кэш предсказания каждый кадр (НЕ внутри хука)
+RS.Heartbeat:Connect(function()
+    if ShouldSilent() then
+        cachedPrediction = PredictHeadPos()
+    else
+        cachedPrediction = nil
+    end
+end)
+
 -- МЕТОД 1: hookmetamethod (Solara)
 if not silentActive and hookmetamethod and getnamecallmethod then
     local ok, err = pcall(function()
         oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            local args = {...}
+            -- Защита от рекурсии
+            if inHook then
+                return oldNamecall(self, ...)
+            end
 
-            if ShouldSilent() then
-                local predictedPos = PredictHeadPos()
-                if predictedPos then
-                    if method == "Raycast" and self == workspace then
-                        local origin = args[1]
-                        if typeof(origin) == "Vector3" then
-                            args[2] = GetSilentDirection(origin, predictedPos, args[2])
-                            return oldNamecall(self, args[1], args[2], args[3])
-                        end
+            local method = getnamecallmethod()
+
+            -- Только если нужен silent и есть кэш
+            if ShouldSilent() and cachedPrediction then
+                if method == "Raycast" and self == workspace then
+                    local args = {...}
+                    local origin = args[1]
+                    if typeof(origin) == "Vector3" then
+                        inHook = true
+                        local newDir = GetSilentDirection(origin, cachedPrediction, args[2])
+                        inHook = false
+                        return oldNamecall(self, origin, newDir, args[3])
                     end
-                    if method == "FindPartOnRayWithIgnoreList"
-                    or method == "FindPartOnRayWithWhitelist"
-                    or method == "FindPartOnRay" then
-                        local ray = args[1]
-                        if typeof(ray) == "Ray" then
-                            local newDir = predictedPos - ray.Origin
-                            if newDir.Magnitude > 0.001 then
-                                args[1] = Ray.new(ray.Origin, newDir.Unit * ray.Direction.Magnitude)
-                            end
-                            return oldNamecall(self, unpack(args))
+                end
+
+                if method == "FindPartOnRayWithIgnoreList"
+                or method == "FindPartOnRayWithWhitelist"
+                or method == "FindPartOnRay" then
+                    local args = {...}
+                    local ray = args[1]
+                    if typeof(ray) == "Ray" then
+                        inHook = true
+                        local newDir = cachedPrediction - ray.Origin
+                        inHook = false
+                        if newDir.Magnitude > 0.001 then
+                            args[1] = Ray.new(ray.Origin, newDir.Unit * ray.Direction.Magnitude)
                         end
+                        return oldNamecall(self, table.unpack(args))
                     end
                 end
             end
+
             return oldNamecall(self, ...)
         end))
     end)
@@ -572,38 +531,42 @@ if not silentActive and getrawmetatable and setreadonly then
         local mt = getrawmetatable(game)
         setreadonly(mt, false)
         local oldNC = mt.__namecall
-        mt.__namecall = newcclosure and newcclosure(function(self, ...)
+        mt.__namecall = newcclosure(function(self, ...)
+            if inHook then
+                return oldNC(self, ...)
+            end
             local method = ""
             pcall(function() method = getnamecallmethod() or "" end)
-            local args = {...}
-            if ShouldSilent() then
-                local predictedPos = PredictHeadPos()
-                if predictedPos then
-                    if method == "Raycast" and self == workspace then
-                        local origin = args[1]
-                        if typeof(origin) == "Vector3" then
-                            args[2] = GetSilentDirection(origin, predictedPos, args[2])
-                            return oldNC(self, args[1], args[2], args[3])
-                        end
+
+            if ShouldSilent() and cachedPrediction then
+                if method == "Raycast" and self == workspace then
+                    local args = {...}
+                    local origin = args[1]
+                    if typeof(origin) == "Vector3" then
+                        inHook = true
+                        local newDir = GetSilentDirection(origin, cachedPrediction, args[2])
+                        inHook = false
+                        return oldNC(self, origin, newDir, args[3])
                     end
-                    if method == "FindPartOnRayWithIgnoreList"
-                    or method == "FindPartOnRayWithWhitelist"
-                    or method == "FindPartOnRay" then
-                        local ray = args[1]
-                        if typeof(ray) == "Ray" then
-                            local newDir = predictedPos - ray.Origin
-                            if newDir.Magnitude > 0.001 then
-                                args[1] = Ray.new(ray.Origin, newDir.Unit * ray.Direction.Magnitude)
-                            end
-                            return oldNC(self, unpack(args))
+                end
+                if method == "FindPartOnRayWithIgnoreList"
+                or method == "FindPartOnRayWithWhitelist"
+                or method == "FindPartOnRay" then
+                    local args = {...}
+                    local ray = args[1]
+                    if typeof(ray) == "Ray" then
+                        inHook = true
+                        local newDir = cachedPrediction - ray.Origin
+                        inHook = false
+                        if newDir.Magnitude > 0.001 then
+                            args[1] = Ray.new(ray.Origin, newDir.Unit * ray.Direction.Magnitude)
                         end
+                        return oldNC(self, table.unpack(args))
                     end
                 end
             end
             return oldNC(self, ...)
-        end) or function(self, ...)
-            return mt.__namecall(self, ...)
-        end
+        end)
         setreadonly(mt, true)
         oldNamecall = oldNC
     end)
@@ -641,76 +604,14 @@ UIS.InputBegan:Connect(function(inp, gpe)
         GetTarget()
     end
 
-    -- Записываем выстрел для авто-pred
     if inp.UserInputType == Enum.UserInputType.MouseButton1 then
         if tick() - lastShoot > 0.05 then
             lastShoot = tick()
-
-            -- Записываем выстрел только если аимим
             if Aiming and Target and CFG.AutoPrediction then
-                local pred = PredictHeadPos()
+                local pred = cachedPrediction
                 if pred then
                     RecordShot(Target, pred, tick())
                     AutoPred.totalShots = AutoPred.totalShots + 1
-                end
-            end
-
-            -- Bullet effects
-            if CFG.BulletTrail or CFG.MuzzleFlash or CFG.HitMarker then
-                local ch = LP.Character
-                if ch then
-                    local tool = ch:FindFirstChildOfClass("Tool")
-                    if tool then
-                        local handle = tool:FindFirstChild("Handle")
-                        local origin = handle and handle.Position
-                            or (ch:FindFirstChild("Head") and ch.Head.Position)
-                        if origin then
-                            local tgt = Mouse.Hit.Position
-                            if CFG.MuzzleFlash then
-                                task.spawn(function()
-                                    local flash = Instance.new("Part")
-                                    flash.Size = Vector3.new(1.5,1.5,1.5)
-                                    flash.Position = origin
-                                    flash.Anchored = true; flash.CanCollide = false
-                                    flash.Shape = Enum.PartType.Ball
-                                    flash.Material = Enum.Material.Neon
-                                    flash.Color = Color3.fromRGB(255,200,50)
-                                    flash.Transparency = 0.3
-                                    flash.Parent = workspace
-                                    for i = 0, 5 do
-                                        pcall(function()
-                                            flash.Size = Vector3.new(1.5-i*0.25,1.5-i*0.25,1.5-i*0.25)
-                                            flash.Transparency = 0.3+i*0.14
-                                        end)
-                                        task.wait(0.02)
-                                    end
-                                    pcall(function() flash:Destroy() end)
-                                end)
-                            end
-                            if CFG.BulletTrail then
-                                task.spawn(function()
-                                    local dir = tgt - origin
-                                    local dist = dir.Magnitude
-                                    if dist > 0.5 and dist < 500 then
-                                        local trail = Instance.new("Part")
-                                        trail.Size = Vector3.new(0.15,0.15,dist)
-                                        trail.CFrame = CFrame.new(origin + dir/2, tgt)
-                                        trail.Anchored = true; trail.CanCollide = false
-                                        trail.Material = Enum.Material.Neon
-                                        trail.Color = CFG.BulletTrailRainbow
-                                            and Color3.fromHSV((tick()*0.3)%1,1,1)
-                                            or CFG.BulletTrailColor
-                                        trail.Parent = workspace
-                                        for i = 0, 10 do
-                                            pcall(function() trail.Transparency = i/10 end)
-                                            task.wait(0.02)
-                                        end
-                                        pcall(function() trail:Destroy() end)
-                                    end
-                                end)
-                            end
-                        end
-                    end
                 end
             end
         end
@@ -1010,8 +911,6 @@ local methodTxt = Draw("Text",{Size=12,Font=2,Outline=true,Position=Vector2.new(
 local watermark = Draw("Text",{Size=16,Font=2,Outline=true,Color=Color3.fromRGB(0,255,120),Visible=true})
 local predLine = Draw("Line",{Thickness=2,Color=Color3.fromRGB(0,255,255),Transparency=0.6,Visible=false})
 local headDot = Draw("Circle",{Thickness=2,NumSides=16,Filled=true,Radius=4,Color=Color3.fromRGB(0,255,120),Transparency=1,Visible=false})
-
--- AUTO PRED debug display
 local autoPredBar = Draw("Text",{Size=13,Font=2,Outline=true,Position=Vector2.new(10,96),Color=Color3.fromRGB(255,200,50),Visible=false})
 
 local ESP = {}
@@ -1032,13 +931,16 @@ end
 
 -- ==================== RENDER ====================
 local lastCleanup = 0
-local rc = RS.RenderStepped:Connect(function()
+local espTimer = 0
+
+local rc = RS.RenderStepped:Connect(function(dt)
     if not Alive then return end
     Cam = workspace.CurrentCamera
     local cx = Cam.ViewportSize.X / 2
     local cy = Cam.ViewportSize.Y / 2
     RainbowHue = (RainbowHue + 0.003) % 1
 
+    -- Очистка памяти раз в 5 сек
     if tick() - lastCleanup > 5 then
         lastCleanup = tick()
         for plr in pairs(VelHistory) do
@@ -1048,188 +950,210 @@ local rc = RS.RenderStepped:Connect(function()
         end
     end
 
-    if CFG.Enabled then GetTarget() else Target = nil end
+    if CFG.Enabled then
+        pcall(GetTarget)
+    else
+        Target = nil
+    end
 
     -- Watermark
     if watermark then
-        watermark.Position = Vector2.new(Cam.ViewportSize.X - 310, 10)
-        watermark.Text = "🎯 SA v15F | " .. SilentMethod
-            .. " | AutoPred: " .. (CFG.AutoPrediction and "ON" or "OFF")
-        watermark.Color = silentActive and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,60,60)
-        watermark.Visible = true
+        pcall(function()
+            watermark.Position = Vector2.new(Cam.ViewportSize.X - 310, 10)
+            watermark.Text = "SA v15F | " .. SilentMethod
+                .. " | AutoPred: " .. (CFG.AutoPrediction and "ON" or "OFF")
+            watermark.Color = silentActive and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,60,60)
+            watermark.Visible = true
+        end)
     end
 
     -- FOV
     if fov then
-        fov.Visible = CFG.ShowFOV and CFG.Enabled
-        fov.Position = Vector2.new(cx,cy)
-        fov.Radius = CFG.FOV
-        fov.Color = CFG.RainbowFOV and Color3.fromHSV(RainbowHue,1,1)
-            or (Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(0,180,200))
+        pcall(function()
+            fov.Visible = CFG.ShowFOV and CFG.Enabled
+            fov.Position = Vector2.new(cx,cy)
+            fov.Radius = CFG.FOV
+            fov.Color = CFG.RainbowFOV and Color3.fromHSV(RainbowHue,1,1)
+                or (Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(0,180,200))
+        end)
     end
 
-    -- Dot
-    local pos = PredictHeadPos()
+    -- Dot и линии (используем кэш)
+    local pos = cachedPrediction
+    if not pos and Target then
+        pcall(function() pos = PredictHeadPos() end)
+    end
+
     if pos and CFG.Enabled then
-        local sp, vis = Cam:WorldToViewportPoint(pos)
-        if vis and sp.Z > 0 then
-            if dot and CFG.ShowDot then
-                dot.Position = Vector2.new(sp.X,sp.Y)
-                dot.Color = Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,220,50)
-                dot.Visible = true
-            end
-            if line and CFG.ShowLine then
-                line.From=Vector2.new(cx,cy); line.To=Vector2.new(sp.X,sp.Y)
-                line.Color=Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(100,100,120)
-                line.Visible=true
-            end
-            if CFG.ShowPredPath and Target and Target.Character and predLine then
-                local hp2 = Target.Character:FindFirstChild(CFG.HitPart) or Target.Character:FindFirstChild("Head")
-                if hp2 then
-                    local csp,cv = Cam:WorldToViewportPoint(hp2.Position)
-                    if cv and csp.Z > 0 then
-                        predLine.From=Vector2.new(csp.X,csp.Y); predLine.To=Vector2.new(sp.X,sp.Y)
-                        predLine.Visible=true
-                        if headDot and CFG.ShowHeadDot then
-                            headDot.Position=Vector2.new(csp.X,csp.Y)
-                            headDot.Color=Color3.fromRGB(255,100,100)
-                            headDot.Visible=true
+        pcall(function()
+            local sp, vis = Cam:WorldToViewportPoint(pos)
+            if vis and sp.Z > 0 then
+                if dot and CFG.ShowDot then
+                    dot.Position = Vector2.new(sp.X,sp.Y)
+                    dot.Color = Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,220,50)
+                    dot.Visible = true
+                end
+                if line and CFG.ShowLine then
+                    line.From=Vector2.new(cx,cy); line.To=Vector2.new(sp.X,sp.Y)
+                    line.Color=Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(100,100,120)
+                    line.Visible=true
+                end
+                if CFG.ShowPredPath and Target and Target.Character and predLine then
+                    local hp2 = Target.Character:FindFirstChild(CFG.HitPart) or Target.Character:FindFirstChild("Head")
+                    if hp2 then
+                        local csp,cv = Cam:WorldToViewportPoint(hp2.Position)
+                        if cv and csp.Z > 0 then
+                            predLine.From=Vector2.new(csp.X,csp.Y)
+                            predLine.To=Vector2.new(sp.X,sp.Y)
+                            predLine.Visible=true
+                            if headDot and CFG.ShowHeadDot then
+                                headDot.Position=Vector2.new(csp.X,csp.Y)
+                                headDot.Color=Color3.fromRGB(255,100,100)
+                                headDot.Visible=true
+                            end
+                        else
+                            if predLine then predLine.Visible=false end
+                            if headDot then headDot.Visible=false end
                         end
-                    else
-                        predLine.Visible=false
-                        if headDot then headDot.Visible=false end
                     end
+                else
+                    if predLine then predLine.Visible=false end
+                    if headDot then headDot.Visible=false end
                 end
             else
+                if dot then dot.Visible=false end
+                if line then line.Visible=false end
                 if predLine then predLine.Visible=false end
                 if headDot then headDot.Visible=false end
             end
-        else
+        end)
+    else
+        pcall(function()
             if dot then dot.Visible=false end
             if line then line.Visible=false end
             if predLine then predLine.Visible=false end
             if headDot then headDot.Visible=false end
-        end
-    else
-        if dot then dot.Visible=false end
-        if line then line.Visible=false end
-        if predLine then predLine.Visible=false end
-        if headDot then headDot.Visible=false end
+        end)
     end
 
     -- Info texts
-    if info then
-        if CFG.Enabled then
-            info.Text = (Aiming and "🎯 LOCKED" or "🔍 SCAN") .. "  " .. (Target and Target.Name or "-")
-            info.Color = Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,220,50)
-            info.Visible = true
-        else info.Visible = false end
-    end
-
-    if pingTxt then
-        local ping = GetPing()
-        pingTxt.Text = "Ping: " .. math.floor(ping) .. "ms"
-        pingTxt.Color = ping < 80 and Color3.fromRGB(100,255,100)
-            or ping < 150 and Color3.fromRGB(255,255,100)
-            or Color3.fromRGB(255,100,100)
-        pingTxt.Visible = CFG.Enabled
-    end
-
-    -- AUTO PRED display
-    if predTxt then
-        if CFG.Enabled and CFG.AutoPrediction then
-            predTxt.Text = string.format(
-                "AutoPred: %.4f | Err: %.3f | Shots: %d",
-                AutoPred.currentPred,
-                AutoPred.avgError,
-                AutoPred.totalShots
-            )
-            predTxt.Color = Color3.fromRGB(100,220,255)
-            predTxt.Visible = true
-        elseif CFG.Enabled then
-            predTxt.Text = string.format("Pred: %.3f (manual)", CFG.BasePred)
-            predTxt.Color = Color3.fromRGB(200,200,100)
-            predTxt.Visible = true
-        else
-            predTxt.Visible = false
+    pcall(function()
+        if info then
+            if CFG.Enabled then
+                info.Text = (Aiming and "LOCKED" or "SCAN") .. "  " .. (Target and Target.Name or "-")
+                info.Color = Aiming and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,220,50)
+                info.Visible = true
+            else info.Visible = false end
         end
-    end
-
-    -- AUTO PRED bar (визуальный индикатор)
-    if autoPredBar and CFG.Enabled and CFG.AutoPrediction and CFG.AutoPredShowDebug then
-        local p = (AutoPred.currentPred - CFG.AutoPredMin) / (CFG.AutoPredMax - CFG.AutoPredMin)
-        local barWidth = 20
-        local filled = math.floor(p * barWidth)
-        local bar = string.rep("█", filled) .. string.rep("░", barWidth - filled)
-        autoPredBar.Text = "AP [" .. bar .. "] " .. string.format("%.4f", AutoPred.currentPred)
-        autoPredBar.Visible = true
-    elseif autoPredBar then
-        autoPredBar.Visible = false
-    end
-
-    if methodTxt then
-        methodTxt.Text = "Silent: " .. SilentMethod .. (silentActive and " ✓" or " ✗")
-        methodTxt.Color = silentActive and Color3.fromRGB(100,255,100) or Color3.fromRGB(255,80,80)
-        methodTxt.Visible = CFG.Enabled
-    end
-
-    if distTxt then
-        if CFG.Enabled and Target and Target.Character then
-            local hp2 = Target.Character:FindFirstChild(CFG.HitPart) or Target.Character:FindFirstChild("Head")
-            if hp2 then
-                local myPos = GetMyPos()
-                if myPos then
-                    local d = (myPos - hp2.Position).Magnitude
-                    local vel = 0
-                    pcall(function()
-                        vel = Target.Character.HumanoidRootPart.AssemblyLinearVelocity.Magnitude
-                    end)
-                    distTxt.Text = string.format("D:%.0fm V:%.0f AP:%.4f", d, vel, AutoPred.currentPred)
-                    distTxt.Visible = true
+        if pingTxt then
+            local ping = GetPing()
+            pingTxt.Text = "Ping: " .. math.floor(ping) .. "ms"
+            pingTxt.Color = ping < 80 and Color3.fromRGB(100,255,100)
+                or ping < 150 and Color3.fromRGB(255,255,100)
+                or Color3.fromRGB(255,100,100)
+            pingTxt.Visible = CFG.Enabled
+        end
+        if predTxt then
+            if CFG.Enabled and CFG.AutoPrediction then
+                predTxt.Text = string.format(
+                    "AutoPred: %.4f | Err: %.3f | Shots: %d",
+                    AutoPred.currentPred, AutoPred.avgError, AutoPred.totalShots
+                )
+                predTxt.Color = Color3.fromRGB(100,220,255)
+                predTxt.Visible = true
+            elseif CFG.Enabled then
+                predTxt.Text = string.format("Pred: %.3f (manual)", CFG.BasePred)
+                predTxt.Color = Color3.fromRGB(200,200,100)
+                predTxt.Visible = true
+            else
+                predTxt.Visible = false
+            end
+        end
+        if autoPredBar and CFG.Enabled and CFG.AutoPrediction and CFG.AutoPredShowDebug then
+            local p = (AutoPred.currentPred - CFG.AutoPredMin) / (CFG.AutoPredMax - CFG.AutoPredMin)
+            local barWidth = 20
+            local filled = math.floor(p * barWidth)
+            local bar = string.rep("█", filled) .. string.rep("░", barWidth - filled)
+            autoPredBar.Text = "AP [" .. bar .. "] " .. string.format("%.4f", AutoPred.currentPred)
+            autoPredBar.Visible = true
+        elseif autoPredBar then
+            autoPredBar.Visible = false
+        end
+        if methodTxt then
+            methodTxt.Text = "Silent: " .. SilentMethod .. (silentActive and " OK" or " FAIL")
+            methodTxt.Color = silentActive and Color3.fromRGB(100,255,100) or Color3.fromRGB(255,80,80)
+            methodTxt.Visible = CFG.Enabled
+        end
+        if distTxt then
+            if CFG.Enabled and Target and Target.Character then
+                local hp2 = Target.Character:FindFirstChild(CFG.HitPart) or Target.Character:FindFirstChild("Head")
+                if hp2 then
+                    local myPos = GetMyPos()
+                    if myPos then
+                        local d = (myPos - hp2.Position).Magnitude
+                        local vel = 0
+                        pcall(function()
+                            vel = Target.Character.HumanoidRootPart.AssemblyLinearVelocity.Magnitude
+                        end)
+                        distTxt.Text = string.format("D:%.0fm V:%.0f AP:%.4f", d, vel, AutoPred.currentPred)
+                        distTxt.Visible = true
+                    else distTxt.Visible = false end
                 else distTxt.Visible = false end
             else distTxt.Visible = false end
-        else distTxt.Visible = false end
-    end
+        end
+    end)
 
-    -- ESP
-    for plr, e in pairs(ESP) do
-        if not plr or not plr.Parent then
-            KillESP(plr)
-        elseif CFG.ShowESP and IsValid(plr) then
-            local hp2 = plr.Character:FindFirstChild("Head")
-            if hp2 then
-                local sp,vis = Cam:WorldToViewportPoint(hp2.Position)
-                if vis and sp.Z > 0 then
-                    local dist = 100
-                    local myPos = GetMyPos()
-                    if myPos then dist = (myPos - hp2.Position).Magnitude end
-                    if e.dot then
-                        e.dot.Position=Vector2.new(sp.X,sp.Y)
-                        e.dot.Radius=math.clamp(500/dist,2,8)
-                        e.dot.Color=(Target==plr) and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,60,80)
-                        e.dot.Visible=true
+    -- ESP — обновляем реже (каждые 0.1 сек)
+    espTimer = espTimer + dt
+    if espTimer >= 0.1 then
+        espTimer = 0
+        for plr, e in pairs(ESP) do
+            pcall(function()
+                if not plr or not plr.Parent then
+                    KillESP(plr)
+                elseif CFG.ShowESP and IsValid(plr) then
+                    local hp2 = plr.Character:FindFirstChild("Head")
+                    if hp2 then
+                        local sp,vis = Cam:WorldToViewportPoint(hp2.Position)
+                        if vis and sp.Z > 0 then
+                            local dist = 100
+                            local myPos = GetMyPos()
+                            if myPos then dist = (myPos - hp2.Position).Magnitude end
+                            if e.dot then
+                                e.dot.Position=Vector2.new(sp.X,sp.Y)
+                                e.dot.Radius=math.clamp(500/dist,2,8)
+                                e.dot.Color=(Target==plr) and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,60,80)
+                                e.dot.Visible=true
+                            end
+                            if e.name and CFG.ShowNames then
+                                e.name.Text=plr.Name; e.name.Position=Vector2.new(sp.X,sp.Y-18)
+                                e.name.Color=(Target==plr) and Color3.fromRGB(0,255,120) or Color3.new(1,1,1)
+                                e.name.Visible=true
+                            elseif e.name then e.name.Visible=false end
+                            if e.hp and CFG.ShowHP then
+                                local hp=0
+                                pcall(function() hp=math.floor(plr.Character:FindFirstChildOfClass("Humanoid").Health) end)
+                                e.hp.Text=hp.." HP"; e.hp.Position=Vector2.new(sp.X,sp.Y+10)
+                                e.hp.Color=hp>60 and Color3.fromRGB(100,255,100)
+                                    or hp>30 and Color3.fromRGB(255,255,100)
+                                    or Color3.fromRGB(255,60,60)
+                                e.hp.Visible=true
+                            elseif e.hp then e.hp.Visible=false end
+                            if e.dist and CFG.ShowDist then
+                                e.dist.Text=math.floor(dist).."m"
+                                e.dist.Position=Vector2.new(sp.X,sp.Y+22); e.dist.Visible=true
+                            elseif e.dist then e.dist.Visible=false end
+                        else
+                            for _,v in pairs(e) do pcall(function() v.Visible=false end) end
+                        end
+                    else
+                        for _,v in pairs(e) do pcall(function() v.Visible=false end) end
                     end
-                    if e.name and CFG.ShowNames then
-                        e.name.Text=plr.Name; e.name.Position=Vector2.new(sp.X,sp.Y-18)
-                        e.name.Color=(Target==plr) and Color3.fromRGB(0,255,120) or Color3.new(1,1,1)
-                        e.name.Visible=true
-                    elseif e.name then e.name.Visible=false end
-                    if e.hp and CFG.ShowHP then
-                        local hp=0
-                        pcall(function() hp=math.floor(plr.Character:FindFirstChildOfClass("Humanoid").Health) end)
-                        e.hp.Text=hp.." HP"; e.hp.Position=Vector2.new(sp.X,sp.Y+10)
-                        e.hp.Color=hp>60 and Color3.fromRGB(100,255,100)
-                            or hp>30 and Color3.fromRGB(255,255,100)
-                            or Color3.fromRGB(255,60,60)
-                        e.hp.Visible=true
-                    elseif e.hp then e.hp.Visible=false end
-                    if e.dist and CFG.ShowDist then
-                        e.dist.Text=math.floor(dist).."m"
-                        e.dist.Position=Vector2.new(sp.X,sp.Y+22); e.dist.Visible=true
-                    elseif e.dist then e.dist.Visible=false end
-                else for _,v in pairs(e) do pcall(function() v.Visible=false end) end end
-            else for _,v in pairs(e) do pcall(function() v.Visible=false end) end end
-        else for _,v in pairs(e) do pcall(function() v.Visible=false end) end end
+                else
+                    for _,v in pairs(e) do pcall(function() v.Visible=false end) end
+                end
+            end)
+        end
     end
 end)
 
@@ -1274,7 +1198,7 @@ tf.BackgroundColor3=Color3.fromRGB(14,14,22); tf.BorderSizePixel=0; tf.Parent=to
 
 local logo=Instance.new("TextLabel")
 logo.Size=UDim2.new(0,340,1,0); logo.Position=UDim2.new(0,16,0,0)
-logo.BackgroundTransparency=1; logo.Text="🎯 SILENT AIM v15F + AUTO PRED"
+logo.BackgroundTransparency=1; logo.Text="SA v15F + AUTO PRED"
 logo.TextColor3=Th.accent; logo.Font=Enum.Font.GothamBlack
 logo.TextSize=14; logo.TextXAlignment=Enum.TextXAlignment.Left; logo.Parent=topBar
 
@@ -1291,7 +1215,7 @@ tabBar.BackgroundColor3=Th.card; tabBar.BorderSizePixel=0; tabBar.Parent=Main
 Instance.new("UICorner",tabBar).CornerRadius=UDim.new(0,8)
 Instance.new("UIListLayout",tabBar).FillDirection=Enum.FillDirection.Horizontal
 
-local allTabs = {"Aim","AutoPred","Range","Bullets","ESP","Effects"}
+local allTabs = {"Aim","AutoPred","Range","ESP","Effects"}
 local tabFrames = {}; local tabButtons = {}
 
 for _,tn in ipairs(allTabs) do
@@ -1404,10 +1328,10 @@ end
 
 -- TAB: Aim
 local aim = tabFrames["Aim"]
-Sep(aim,"🎯 Silent Aim")
-Toggle(aim,"Silent Aim ON/OFF","SilentAim","🎯")
-Toggle(aim,"Master Enable","Enabled","⚡")
-Toggle(aim,"Smart Prediction","SmartPrediction","🧠")
+Sep(aim,"Silent Aim")
+Toggle(aim,"Silent Aim ON/OFF","SilentAim","")
+Toggle(aim,"Master Enable","Enabled","")
+Toggle(aim,"Smart Prediction","SmartPrediction","")
 Slider(aim,"FOV","FOV",30,500)
 Sep(aim,"Hit Part")
 BtnRow(aim,{
@@ -1423,16 +1347,14 @@ BtnRow(aim,{
     {name="C",col=Th.card,cb=function() CFG.AimKey="C"; Notify("Key","C",1) end},
 })
 Sep(aim,"Filters")
-Toggle(aim,"Team Check","TeamCheck","👥")
-Toggle(aim,"Ignore Downed","NoDowned","💀")
-Toggle(aim,"Ignore Cuffed","NoCuffed","🔗")
-Toggle(aim,"Wall Check","IgnoreWalls","🧱")
+Toggle(aim,"Team Check","TeamCheck","")
+Toggle(aim,"Ignore Downed","NoDowned","")
+Toggle(aim,"Ignore Cuffed","NoCuffed","")
 
--- TAB: AutoPred (НОВЫЙ)
+-- TAB: AutoPred
 local apTab = tabFrames["AutoPred"]
-Sep(apTab,"🤖 Auto Prediction")
+Sep(apTab,"Auto Prediction")
 
--- Статус
 local statusCard = Instance.new("Frame")
 statusCard.Size = UDim2.new(1,0,0,80)
 statusCard.BackgroundColor3 = Color3.fromRGB(15,25,15)
@@ -1454,14 +1376,11 @@ statusLbl.TextXAlignment = Enum.TextXAlignment.Left
 statusLbl.Text = "AutoPred: Initializing..."
 statusLbl.Parent = statusCard
 
--- Обновляем статус каждую секунду
 task.spawn(function()
     while Alive do
         pcall(function()
             statusLbl.Text = string.format(
-                "🤖 Current Pred: %.4f\n" ..
-                "📊 Error: %.3f | Shots: %d\n" ..
-                "📈 Range: %.3f → %.3f",
+                "Current Pred: %.4f\nError: %.3f | Shots: %d\nRange: %.3f to %.3f",
                 AutoPred.currentPred,
                 AutoPred.avgError,
                 AutoPred.totalShots,
@@ -1473,8 +1392,8 @@ task.spawn(function()
     end
 end)
 
-Toggle(apTab,"Auto Prediction","AutoPrediction","🤖")
-Toggle(apTab,"Show Debug","AutoPredShowDebug","🔍")
+Toggle(apTab,"Auto Prediction","AutoPrediction","")
+Toggle(apTab,"Show Debug","AutoPredShowDebug","")
 Sep(apTab,"Learning Settings")
 Slider(apTab,"Learning Rate","AutoPredLearning",0.01,0.5,3)
 Slider(apTab,"Min Pred","AutoPredMin",0.05,0.2,3)
@@ -1490,30 +1409,27 @@ BtnRow(apTab,{
         Notify("AutoPred","Reset to 0.145",2)
     end},
     {name="Pistol(0.14)",col=Color3.fromRGB(180,140,0),cb=function()
-        AutoPred.currentPred=0.14
-        Notify("AutoPred","Set to 0.14",2)
+        AutoPred.currentPred=0.14; Notify("AutoPred","Set to 0.14",2)
     end},
     {name="AR(0.15)",col=Color3.fromRGB(200,80,40),cb=function()
-        AutoPred.currentPred=0.15
-        Notify("AutoPred","Set to 0.15",2)
+        AutoPred.currentPred=0.15; Notify("AutoPred","Set to 0.15",2)
     end},
     {name="Sniper(0.17)",col=Color3.fromRGB(200,40,40),cb=function()
-        AutoPred.currentPred=0.17
-        Notify("AutoPred","Set to 0.17",2)
+        AutoPred.currentPred=0.17; Notify("AutoPred","Set to 0.17",2)
     end},
 })
 Sep(apTab,"Manual Override (AutoPred=OFF)")
 Slider(apTab,"Base Pred","BasePred",0.05,0.3,3)
 Slider(apTab,"Max Pred","MaxPred",0.05,0.5,3)
-Toggle(apTab,"Distance Prediction","DistancePrediction","📏")
+Toggle(apTab,"Distance Prediction","DistancePrediction","")
 
 -- TAB: Range
 local rng = tabFrames["Range"]
-Sep(rng,"⚙️ Physics")
-Toggle(rng,"Ping Compensation","PingComp","📡")
-Toggle(rng,"Predict Jump","PredictJump","🦘")
-Toggle(rng,"Predict Fall","PredictFall","⬇️")
-Toggle(rng,"Resolver","ResolverEnabled","🔧")
+Sep(rng,"Physics")
+Toggle(rng,"Ping Compensation","PingComp","")
+Toggle(rng,"Predict Jump","PredictJump","")
+Toggle(rng,"Predict Fall","PredictFall","")
+Toggle(rng,"Resolver","ResolverEnabled","")
 Sep(rng,"Bullet")
 Slider(rng,"Bullet Speed","BulletSpeed",500,2000)
 Slider(rng,"Bullet Drop","BulletDrop",0,2,2)
@@ -1526,13 +1442,8 @@ BtnRow(rng,{
     {name="Distance",col=Color3.fromRGB(40,120,200),cb=function() CFG.TargetPriority="Distance"; Notify("Priority","Distance",1) end},
     {name="Low HP",col=Color3.fromRGB(200,40,60),cb=function() CFG.TargetPriority="HP"; Notify("Priority","Low HP",1) end},
 })
-Sep(rng,"Da Hood Presets (AutoPred OFF)")
+Sep(rng,"Presets")
 BtnRow(rng,{
-    {name="Fists",col=Color3.fromRGB(0,180,80),cb=function()
-        CFG.AutoPrediction=false; CFG.BasePred=0.145; CFG.MaxPred=0.145
-        CFG.BulletSpeed=2000; CFG.BulletDrop=0; CFG.DistancePrediction=false
-        Notify("Preset","Fists",2)
-    end},
     {name="Pistol",col=Color3.fromRGB(180,160,0),cb=function()
         CFG.AutoPrediction=false; CFG.BasePred=0.145; CFG.MaxPred=0.165
         CFG.BulletSpeed=1500; CFG.BulletDrop=0; CFG.DistancePrediction=true
@@ -1548,48 +1459,44 @@ BtnRow(rng,{
         CFG.BulletSpeed=1000; CFG.BulletDrop=0.5; CFG.DistancePrediction=true
         Notify("Preset","Sniper",2)
     end},
+    {name="Auto",col=Color3.fromRGB(0,180,80),cb=function()
+        CFG.AutoPrediction=true
+        Notify("Preset","AutoPred ON",2)
+    end},
 })
-
--- TAB: Bullets
-local bul = tabFrames["Bullets"]
-Sep(bul,"Bullet Effects")
-Toggle(bul,"Bullet Trail","BulletTrail","💫")
-Toggle(bul,"Rainbow Trail","BulletTrailRainbow","🌈")
-Toggle(bul,"Muzzle Flash","MuzzleFlash","🔥")
-Toggle(bul,"Hit Marker","HitMarker","✖️")
 
 -- TAB: ESP
 local espT = tabFrames["ESP"]
 Sep(espT,"ESP")
-Toggle(espT,"ESP","ShowESP","👁")
-Toggle(espT,"Names","ShowNames","📝")
-Toggle(espT,"HP","ShowHP","❤️")
-Toggle(espT,"Distance","ShowDist","📏")
+Toggle(espT,"ESP","ShowESP","")
+Toggle(espT,"Names","ShowNames","")
+Toggle(espT,"HP","ShowHP","")
+Toggle(espT,"Distance","ShowDist","")
 Sep(espT,"Aim Visuals")
-Toggle(espT,"FOV Circle","ShowFOV","⭕")
-Toggle(espT,"Rainbow FOV","RainbowFOV","🌈")
-Toggle(espT,"Target Dot","ShowDot","🔴")
-Toggle(espT,"Target Line","ShowLine","📍")
-Toggle(espT,"Prediction Path","ShowPredPath","📐")
-Toggle(espT,"Head Marker","ShowHeadDot","🎯")
+Toggle(espT,"FOV Circle","ShowFOV","")
+Toggle(espT,"Rainbow FOV","RainbowFOV","")
+Toggle(espT,"Target Dot","ShowDot","")
+Toggle(espT,"Target Line","ShowLine","")
+Toggle(espT,"Prediction Path","ShowPredPath","")
+Toggle(espT,"Head Marker","ShowHeadDot","")
 
 -- TAB: Effects
 local fx = tabFrames["Effects"]
 Sep(fx,"Character Effects")
-Toggle(fx,"Wings","Wings","🪽")
+Toggle(fx,"Wings","Wings","")
 BtnRow(fx,{
     {name="Angel",col=Color3.fromRGB(255,215,0),cb=function() CFG.WingStyle="Angel"; ClearEffect("Wings") end},
     {name="Demon",col=Color3.fromRGB(150,0,0),cb=function() CFG.WingStyle="Demon"; ClearEffect("Wings") end},
     {name="Fire",col=Color3.fromRGB(255,100,0),cb=function() CFG.WingStyle="Fire"; ClearEffect("Wings") end},
-    {name="🌈",col=Color3.fromRGB(255,50,150),cb=function() CFG.WingStyle="Rainbow"; ClearEffect("Wings") end},
+    {name="Rainbow",col=Color3.fromRGB(255,50,150),cb=function() CFG.WingStyle="Rainbow"; ClearEffect("Wings") end},
 })
-Toggle(fx,"Aura","Aura","✨")
-Toggle(fx,"Glow","BodyGlow","💡")
-Toggle(fx,"Halo","Halo","😇")
-Toggle(fx,"Trail","Trail","🌊")
-Toggle(fx,"Rainbow","AuraRainbow","🌈")
-Toggle(fx,"Rings","FloatingRings","💫")
-Toggle(fx,"Orbs","Orbs","🔮")
+Toggle(fx,"Aura","Aura","")
+Toggle(fx,"Glow","BodyGlow","")
+Toggle(fx,"Halo","Halo","")
+Toggle(fx,"Trail","Trail","")
+Toggle(fx,"Rainbow Effects","AuraRainbow","")
+Toggle(fx,"Rings","FloatingRings","")
+Toggle(fx,"Orbs","Orbs","")
 
 -- ==================== HOTKEYS ====================
 UIS.InputBegan:Connect(function(inp,gpe)
@@ -1611,7 +1518,8 @@ task.spawn(function()
             ClearAll()
             pcall(function() rc:Disconnect() end)
             for p in pairs(ESP) do KillESP(p) end
-            for _,o in pairs({fov,dot,line,info,pingTxt,distTxt,methodTxt,watermark,predLine,headDot,predTxt,autoPredBar}) do
+            local drawObjects = {fov,dot,line,info,pingTxt,distTxt,methodTxt,watermark,predLine,headDot,predTxt,autoPredBar}
+            for _,o in pairs(drawObjects) do
                 if o then pcall(function() o:Remove() end) end
             end
             if G then pcall(function() G:Destroy() end) end
@@ -1623,8 +1531,6 @@ task.spawn(function()
 end)
 
 Notify("Silent Aim v15F","AutoPred: ON | "..SilentMethod,4)
-print("=== SA v15F + AUTO PRED ===")
-print("AutoPred начальное значение:", AutoPred.currentPred)
-print("Зажми RMB → стреляй → AutoPred обучается")
-print("INSERT = меню | DELETE = выгрузить | F1 = вкл/выкл")
-print("===========================")
+print("=== SA v15F FIXED ===")
+print("INSERT = menu | DELETE = unload | F1 = toggle")
+print("=====================")
