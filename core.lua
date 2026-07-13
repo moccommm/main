@@ -1,5 +1,6 @@
 -- ===============================================
---   SAFE HUB v3.1 - FIXED Bypass + Working UI
+--   SAFE HUB v4.0 - UNIVERSAL EDITION
+--   Da Hood + Boom Hood Auto-Detect
 -- ===============================================
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -16,25 +17,62 @@ local Stats = game:GetService("Stats")
 local LP = Players.LocalPlayer
 local Cam = WS.CurrentCamera
 
--- ==================== CONFIG ====================
+-- ==================== АВТООПРЕДЕЛЕНИЕ ИГРЫ ====================
+local GAME = "Unknown"
+local GAME_ID = game.PlaceId
+local GAME_NAME = ""
+pcall(function()
+    GAME_NAME = game:GetService("MarketplaceService"):GetProductInfo(GAME_ID).Name
+end)
+
+-- Da Hood ID: 2788229376
+-- Boom Hood ID: 114504016540209 (или похожие)
+local nameLower = GAME_NAME:lower()
+
+if GAME_ID == 2788229376 or nameLower:find("da hood") or nameLower:find("дахуд") then
+    GAME = "DaHood"
+elseif nameLower:find("boom hood") or nameLower:find("bum hood") or nameLower:find("бум") or nameLower:find("boom") or nameLower:find("шлем") or nameLower:find("дуэл") then
+    GAME = "BoomHood"
+else
+    -- Определяем по структуре игры
+    if game:GetService("ReplicatedStorage"):FindFirstChild("Events") 
+    or WS:FindFirstChild("Live") then
+        GAME = "DaHood"
+    else
+        GAME = "BoomHood"  -- по умолчанию
+    end
+end
+
+-- ==================== CONFIG (адаптируется под игру) ====================
 local CFG = {
-    SilentAim = true, SilentAimPart = "Head", SilentAimFOV = 200,
-    SilentAimPrediction = 0.165, SilentAimTeamCheck = false,
-    SilentAimNoDowned = true, SilentAimVisibleOnly = false,
-    Resolver = true, TargetPriority = "FOV",
-    AutoPrediction = false, BulletSpeed = 1800,
-    TriggerBot = false, TriggerDelay = 50,
+    SilentAim = true, 
+    SilentAimPart = "Head", 
+    SilentAimFOV = 200,
+    SilentAimPrediction = GAME == "DaHood" and 0.165 or 0.138,  -- Da Hood медленнее
+    SilentAimTeamCheck = false,
+    SilentAimNoDowned = true, 
+    SilentAimVisibleOnly = false,
+    Resolver = true, 
+    TargetPriority = "FOV",
+    AutoPrediction = false, 
+    BulletSpeed = GAME == "DaHood" and 1800 or 1500,
+    TriggerBot = false, 
+    TriggerDelay = 50,
+    
     ESP = true, ESPBoxes = true,
     ESPNames = true, ESPHealth = true, ESPDistance = true,
     ESPTracers = false, ESPTracerFrom = "Bottom",
     ESPWeapon = false, ESPHeadDot = false,
     ESPMaxDist = 1000,
+    
     ShowFOV = true, ShowFOVDot = true, FOVRainbow = false,
-    FOVColor = Color3.fromRGB(255, 50, 100), FOVThickness = 2,
+    FOVColor = GAME == "DaHood" and Color3.fromRGB(255, 50, 100) or Color3.fromRGB(120, 90, 220),
+    FOVThickness = 2,
     Crosshair = false, CrosshairSize = 10, CrosshairGap = 4,
     CrosshairColor = Color3.fromRGB(0, 255, 100), CrosshairDot = true,
-    -- ❌ УБРАНО: Chams, FullBright, NoFog, Camera FOV, Saturation
-    -- Всё это палит античит Da Hood!
+    
+    -- Anti-Kick для Boom Hood
+    AntiKick = GAME == "BoomHood",
 }
 
 local Target, cachedPred, inHook, oldNamecall = nil, nil, false, nil
@@ -62,15 +100,25 @@ local function GetPing()
     local ok,v=pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
     return ok and math.floor(v) or 0
 end
+
+-- Универсальная проверка Downed (работает в обеих играх)
 local function IsDowned(ch)
     if not ch then return false end
     local ok,r=pcall(function()
+        -- Da Hood: BodyEffects/K.O
         local be=ch:FindFirstChild("BodyEffects")
-        if be then local ko=be:FindFirstChild("K.O"); return ko and ko.Value end
+        if be then 
+            local ko=be:FindFirstChild("K.O")
+            if ko then return ko.Value end 
+        end
+        -- Boom Hood: аналогично
+        local ko2 = ch:FindFirstChild("K.O") or ch:FindFirstChild("Downed")
+        if ko2 then return ko2.Value end
         return false
     end)
     return ok and r
 end
+
 local function GetWeapon(plr)
     if not plr or not plr.Character then return "None" end
     local tool=plr.Character:FindFirstChildOfClass("Tool")
@@ -165,37 +213,58 @@ RS.Heartbeat:Connect(function()
 end)
 
 -- ==================== HOOK ====================
-if hookmetamethod and getnamecallmethod then
-    pcall(function()
-        oldNamecall=hookmetamethod(game,"__namecall",newcclosure(function(self,...)
-            if inHook then return oldNamecall(self,...) end
-            local method=getnamecallmethod(); local args={...}
-            if CFG.SilentAim and cachedPred then
-                if method=="Raycast" and self==WS then
-                    local origin=args[1]
-                    if typeof(origin)=="Vector3" then
-                        local dir=cachedPred-origin
-                        if dir.Magnitude>0.001 then
-                            args[2]=dir.Unit*(args[2] and args[2].Magnitude or 1000)
-                            return oldNamecall(self,args[1],args[2],args[3])
+-- Задержка для Boom Hood (обход античита)
+local function InstallHook()
+    if hookmetamethod and getnamecallmethod and newcclosure then
+        pcall(function()
+            oldNamecall=hookmetamethod(game,"__namecall",newcclosure(function(self,...)
+                if inHook then return oldNamecall(self,...) end
+                local method=getnamecallmethod(); local args={...}
+                
+                if CFG.SilentAim and cachedPred then
+                    if method=="Raycast" and self==WS then
+                        local origin=args[1]
+                        if typeof(origin)=="Vector3" then
+                            local dir=cachedPred-origin
+                            if dir.Magnitude>0.001 then
+                                args[2]=dir.Unit*(args[2] and args[2].Magnitude or 1000)
+                                return oldNamecall(self,args[1],args[2],args[3])
+                            end
+                        end
+                    end
+                    if method=="FindPartOnRayWithIgnoreList" or method=="FindPartOnRayWithWhitelist" or method=="FindPartOnRay" then
+                        local ray=args[1]
+                        if typeof(ray)=="Ray" then
+                            local dir=cachedPred-ray.Origin
+                            if dir.Magnitude>0.001 then
+                                args[1]=Ray.new(ray.Origin,dir.Unit*ray.Direction.Magnitude)
+                            end
+                            return oldNamecall(self,table.unpack(args))
                         end
                     end
                 end
-                if method=="FindPartOnRayWithIgnoreList" or method=="FindPartOnRayWithWhitelist" or method=="FindPartOnRay" then
-                    local ray=args[1]
-                    if typeof(ray)=="Ray" then
-                        local dir=cachedPred-ray.Origin
-                        if dir.Magnitude>0.001 then
-                            args[1]=Ray.new(ray.Origin,dir.Unit*ray.Direction.Magnitude)
-                        end
-                        return oldNamecall(self,table.unpack(args))
-                    end
+                
+                -- Anti-Kick для Boom Hood
+                if CFG.AntiKick and method == "Kick" and self == LP then
+                    warn("[Safe Hub] Kick blocked")
+                    return nil
                 end
-            end
-            return oldNamecall(self,...)
-        end))
+                
+                return oldNamecall(self,...)
+            end))
+        end)
+        Notify("Silent Aim","Загружен для "..GAME.."!",2)
+    end
+end
+
+-- Boom Hood: задержка перед hook (обход античита)
+if GAME == "BoomHood" then
+    task.spawn(function()
+        task.wait(math.random(30, 60) / 10)
+        InstallHook()
     end)
-    Notify("Silent Aim","Загружен!",2)
+else
+    InstallHook()  -- Da Hood: сразу
 end
 
 -- ==================== TRIGGER ====================
@@ -316,7 +385,7 @@ RS.RenderStepped:Connect(function(dt)
             local rootSP,rootVis,rootZ=GetScreenPos(root.Position)
             local headSP,headVis=GetScreenPos(head.Position+Vector3.new(0,0.5,0))
             if not rootVis or rootZ<=0 then return hideAll() end
-            local col=Target==plr and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,50,100)
+            local col=Target==plr and Color3.fromRGB(0,255,120) or CFG.FOVColor
             local hp=GetHP(ch); local mhp=GetMaxHP(ch)
             local hpr=math.clamp(hp/math.max(mhp,1),0,1)
             local bh=math.abs(rootSP.Y-headSP.Y)*2.2; local bw=bh*0.55
@@ -382,18 +451,20 @@ pcall(function() if gethui then guiParent=gethui() end end)
 pcall(function() ScreenGui.Parent=guiParent end)
 if not ScreenGui.Parent then ScreenGui.Parent=LP.PlayerGui end
 
+-- Цвета зависят от игры
+local isDaHood = GAME == "DaHood"
 local C = {
     BG=Color3.fromRGB(15,15,22), BG2=Color3.fromRGB(20,20,30),
     BG3=Color3.fromRGB(25,25,38), Card=Color3.fromRGB(28,28,42),
     CardH=Color3.fromRGB(35,35,52), Border=Color3.fromRGB(45,45,65),
-    Accent=Color3.fromRGB(140,100,255), Accent2=Color3.fromRGB(90,200,255),
+    Accent = isDaHood and Color3.fromRGB(255,50,100) or Color3.fromRGB(140,100,255),
+    Accent2 = isDaHood and Color3.fromRGB(255,150,60) or Color3.fromRGB(90,200,255),
     Green=Color3.fromRGB(0,230,140), Text=Color3.fromRGB(245,245,255),
     TextDim=Color3.fromRGB(150,150,180), TextSub=Color3.fromRGB(100,100,130),
     Red=Color3.fromRGB(255,80,100), Yellow=Color3.fromRGB(255,200,60),
     Off=Color3.fromRGB(40,40,58),
 }
 
--- Главное окно
 local Main = Instance.new("Frame")
 Main.Name = "Main"
 Main.Size = UDim2.new(0, 720, 0, 500)
@@ -406,7 +477,6 @@ Main.Parent = ScreenGui
 Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 10)
 local mS = Instance.new("UIStroke", Main); mS.Color = C.Border
 
--- SIDEBAR (СНАЧАЛА СОЗДАЁМ КАК ФРЕЙМ)
 local Sidebar = Instance.new("Frame")
 Sidebar.Name = "Sidebar"
 Sidebar.Size = UDim2.new(0, 180, 1, 0)
@@ -422,7 +492,6 @@ sbFix.Position = UDim2.new(1, -10, 0, 0)
 sbFix.BackgroundColor3 = C.BG2
 sbFix.BorderSizePixel = 0
 
--- ЛОГО
 local LogoIcon = Instance.new("Frame", Sidebar)
 LogoIcon.Size = UDim2.new(0, 42, 0, 42)
 LogoIcon.Position = UDim2.new(0, 15, 0, 14)
@@ -436,7 +505,7 @@ lg.Rotation = 45
 local LogoSymbol = Instance.new("TextLabel", LogoIcon)
 LogoSymbol.Size = UDim2.new(1, 0, 1, 0)
 LogoSymbol.BackgroundTransparency = 1
-LogoSymbol.Text = "◆"
+LogoSymbol.Text = isDaHood and "◆" or "☾"
 LogoSymbol.TextColor3 = Color3.new(1,1,1)
 LogoSymbol.Font = Enum.Font.GothamBlack
 LogoSymbol.TextSize = 22
@@ -455,8 +524,8 @@ local LogoVer = Instance.new("TextLabel", Sidebar)
 LogoVer.Size = UDim2.new(0, 110, 0, 14)
 LogoVer.Position = UDim2.new(0, 65, 0, 36)
 LogoVer.BackgroundTransparency = 1
-LogoVer.Text = "v3.1 Safe"
-LogoVer.TextColor3 = C.TextDim
+LogoVer.Text = "v4.0 • " .. GAME
+LogoVer.TextColor3 = C.Accent2
 LogoVer.Font = Enum.Font.Gotham
 LogoVer.TextSize = 10
 LogoVer.TextXAlignment = Enum.TextXAlignment.Left
@@ -467,7 +536,6 @@ sbDiv.Position = UDim2.new(0, 15, 0, 78)
 sbDiv.BackgroundColor3 = C.Border
 sbDiv.BorderSizePixel = 0
 
--- HEADER (СОЗДАЁМ ЗДЕСЬ)
 local Header = Instance.new("Frame", Main)
 Header.Size = UDim2.new(1, -180, 0, 55)
 Header.Position = UDim2.new(0, 180, 0, 0)
@@ -484,9 +552,24 @@ HTitle.Font = Enum.Font.GothamBold
 HTitle.TextSize = 18
 HTitle.TextXAlignment = Enum.TextXAlignment.Left
 
+-- Game indicator
+local GameBox = Instance.new("Frame", Header)
+GameBox.Size = UDim2.new(0, 90, 0, 26)
+GameBox.Position = UDim2.new(1, -350, 0.5, -13)
+GameBox.BackgroundColor3 = C.Card
+GameBox.BorderSizePixel = 0
+Instance.new("UICorner", GameBox).CornerRadius = UDim.new(0, 6)
+local GameLbl = Instance.new("TextLabel", GameBox)
+GameLbl.Size = UDim2.new(1, 0, 1, 0)
+GameLbl.BackgroundTransparency = 1
+GameLbl.Text = "🎮 " .. GAME
+GameLbl.TextColor3 = C.Accent
+GameLbl.Font = Enum.Font.GothamBold
+GameLbl.TextSize = 10
+
 local StatFPS = Instance.new("Frame", Header)
 StatFPS.Size = UDim2.new(0, 75, 0, 26)
-StatFPS.Position = UDim2.new(1, -260, 0.5, -13)
+StatFPS.Position = UDim2.new(1, -255, 0.5, -13)
 StatFPS.BackgroundColor3 = C.Card
 StatFPS.BorderSizePixel = 0
 Instance.new("UICorner", StatFPS).CornerRadius = UDim.new(0, 6)
@@ -528,7 +611,6 @@ CloseBtn.MouseButton1Click:Connect(function()
     Notify("Menu", "INSERT to show", 2)
 end)
 
--- CONTENT AREA
 local ContentArea = Instance.new("Frame", Main)
 ContentArea.Size = UDim2.new(1, -180, 1, -55)
 ContentArea.Position = UDim2.new(0, 180, 0, 55)
@@ -536,7 +618,6 @@ ContentArea.BackgroundColor3 = C.BG
 ContentArea.BorderSizePixel = 0
 ContentArea.ClipsDescendants = true
 
--- ==================== ТАБЫ ====================
 local Tabs = {
     {name="Aimbot",  icon="◎"},
     {name="Visuals", icon="◈"},
@@ -548,7 +629,6 @@ local TabButtons = {}
 local TabPages = {}
 local CurrentTab = "Aimbot"
 
--- ВАЖНО: сначала создаём страницы!
 for _, tab in ipairs(Tabs) do
     local page = Instance.new("ScrollingFrame", ContentArea)
     page.Name = tab.name .. "Page"
@@ -562,15 +642,11 @@ for _, tab in ipairs(Tabs) do
     page.AutomaticCanvasSize = Enum.AutomaticSize.Y
     page.Visible = (tab.name == CurrentTab)
     TabPages[tab.name] = page
-
     local pad = Instance.new("UIPadding", page)
-    pad.PaddingTop = UDim.new(0, 15)
-    pad.PaddingLeft = UDim.new(0, 15)
-    pad.PaddingRight = UDim.new(0, 15)
-    pad.PaddingBottom = UDim.new(0, 15)
+    pad.PaddingTop = UDim.new(0, 15); pad.PaddingLeft = UDim.new(0, 15)
+    pad.PaddingRight = UDim.new(0, 15); pad.PaddingBottom = UDim.new(0, 15)
 end
 
--- ПОТОМ создаём кнопки табов в сайдбаре
 for i, tab in ipairs(Tabs) do
     local btn = Instance.new("TextButton", Sidebar)
     btn.Name = tab.name .. "Btn"
@@ -582,7 +658,6 @@ for i, tab in ipairs(Tabs) do
     btn.AutoButtonColor = false
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
     TabButtons[tab.name] = btn
-
     local indicator = Instance.new("Frame", btn)
     indicator.Name = "Indicator"
     indicator.Size = UDim2.new(0, 3, 0.6, 0)
@@ -591,7 +666,6 @@ for i, tab in ipairs(Tabs) do
     indicator.BorderSizePixel = 0
     indicator.Visible = tab.name == CurrentTab
     Instance.new("UICorner", indicator).CornerRadius = UDim.new(1, 0)
-
     local icon = Instance.new("TextLabel", btn)
     icon.Name = "Icon"
     icon.Size = UDim2.new(0, 30, 1, 0)
@@ -601,7 +675,6 @@ for i, tab in ipairs(Tabs) do
     icon.TextColor3 = tab.name == CurrentTab and C.Accent or C.TextDim
     icon.Font = Enum.Font.GothamBold
     icon.TextSize = 16
-
     local lbl = Instance.new("TextLabel", btn)
     lbl.Name = "Lbl"
     lbl.Size = UDim2.new(1, -50, 1, 0)
@@ -612,29 +685,21 @@ for i, tab in ipairs(Tabs) do
     lbl.Font = Enum.Font.GothamBold
     lbl.TextSize = 12
     lbl.TextXAlignment = Enum.TextXAlignment.Left
-
-    -- Клик
     btn.MouseButton1Click:Connect(function()
         CurrentTab = tab.name
         HTitle.Text = tab.name
-        
-        for n, p in pairs(TabPages) do
-            p.Visible = (n == tab.name)
-        end
-        
+        for n, p in pairs(TabPages) do p.Visible = (n == tab.name) end
         for n, b in pairs(TabButtons) do
             local active = (n == tab.name)
             local bIcon = b:FindFirstChild("Icon")
             local bLbl = b:FindFirstChild("Lbl")
             local bInd = b:FindFirstChild("Indicator")
-            
             TS:Create(b, TweenInfo.new(0.2), {BackgroundColor3 = active and C.Card or C.BG2}):Play()
             if bLbl then TS:Create(bLbl, TweenInfo.new(0.2), {TextColor3 = active and C.Text or C.TextDim}):Play() end
             if bIcon then TS:Create(bIcon, TweenInfo.new(0.2), {TextColor3 = active and C.Accent or C.TextDim}):Play() end
             if bInd then bInd.Visible = active end
         end
     end)
-
     btn.MouseEnter:Connect(function()
         if CurrentTab ~= tab.name then
             TS:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = C.Card}):Play()
@@ -647,7 +712,6 @@ for i, tab in ipairs(Tabs) do
     end)
 end
 
--- ==================== ФУНКЦИЯ СЕКЦИИ ====================
 local function CreateSection(parent, title)
     local wrap = Instance.new("Frame", parent)
     wrap.Size = UDim2.new(1, 0, 0, 40)
@@ -656,14 +720,12 @@ local function CreateSection(parent, title)
     wrap.AutomaticSize = Enum.AutomaticSize.Y
     Instance.new("UICorner", wrap).CornerRadius = UDim.new(0, 8)
     local ws = Instance.new("UIStroke", wrap); ws.Color = C.Border
-
     local accentBar = Instance.new("Frame", wrap)
     accentBar.Size = UDim2.new(0, 3, 0, 20)
     accentBar.Position = UDim2.new(0, 10, 0, 7)
     accentBar.BackgroundColor3 = C.Accent
     accentBar.BorderSizePixel = 0
     Instance.new("UICorner", accentBar).CornerRadius = UDim.new(1, 0)
-
     local titleLbl = Instance.new("TextLabel", wrap)
     titleLbl.Size = UDim2.new(1, -30, 0, 34)
     titleLbl.Position = UDim2.new(0, 20, 0, 0)
@@ -673,59 +735,41 @@ local function CreateSection(parent, title)
     titleLbl.Font = Enum.Font.GothamBold
     titleLbl.TextSize = 12
     titleLbl.TextXAlignment = Enum.TextXAlignment.Left
-
     local content = Instance.new("Frame", wrap)
     content.Size = UDim2.new(1, 0, 0, 0)
     content.Position = UDim2.new(0, 0, 0, 34)
     content.BackgroundTransparency = 1
     content.AutomaticSize = Enum.AutomaticSize.Y
-
     local layout = Instance.new("UIListLayout", content)
     layout.Padding = UDim.new(0, 3)
     layout.SortOrder = Enum.SortOrder.LayoutOrder
-
     local pad = Instance.new("UIPadding", content)
     pad.PaddingLeft = UDim.new(0, 10)
     pad.PaddingRight = UDim.new(0, 10)
     pad.PaddingBottom = UDim.new(0, 10)
-
     return content
 end
 
--- ==================== UI ЭЛЕМЕНТЫ ====================
 local function Toggle(parent, label, key, cb)
     local f = Instance.new("Frame", parent)
-    f.Size = UDim2.new(1, 0, 0, 30)
-    f.BackgroundTransparency = 1
-
+    f.Size = UDim2.new(1, 0, 0, 30); f.BackgroundTransparency = 1
     local lbl = Instance.new("TextLabel", f)
-    lbl.Size = UDim2.new(0.7, 0, 1, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = label
-    lbl.TextColor3 = C.Text
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextSize = 12
+    lbl.Size = UDim2.new(0.7, 0, 1, 0); lbl.BackgroundTransparency = 1
+    lbl.Text = label; lbl.TextColor3 = C.Text
+    lbl.Font = Enum.Font.Gotham; lbl.TextSize = 12
     lbl.TextXAlignment = Enum.TextXAlignment.Left
-
     local sw = Instance.new("Frame", f)
-    sw.Size = UDim2.new(0, 34, 0, 18)
-    sw.Position = UDim2.new(1, -38, 0.5, -9)
-    sw.BackgroundColor3 = CFG[key] and C.Accent or C.Off
-    sw.BorderSizePixel = 0
+    sw.Size = UDim2.new(0, 34, 0, 18); sw.Position = UDim2.new(1, -38, 0.5, -9)
+    sw.BackgroundColor3 = CFG[key] and C.Accent or C.Off; sw.BorderSizePixel = 0
     Instance.new("UICorner", sw).CornerRadius = UDim.new(1, 0)
-
     local knob = Instance.new("Frame", sw)
     knob.Size = UDim2.new(0, 14, 0, 14)
     knob.Position = CFG[key] and UDim2.new(1,-16,0.5,-7) or UDim2.new(0,2,0.5,-7)
-    knob.BackgroundColor3 = Color3.new(1,1,1)
-    knob.BorderSizePixel = 0
+    knob.BackgroundColor3 = Color3.new(1,1,1); knob.BorderSizePixel = 0
     Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
-
     local btn = Instance.new("TextButton", f)
-    btn.Size = UDim2.new(1, 0, 1, 0)
-    btn.BackgroundTransparency = 1
-    btn.Text = ""
-    btn.AutoButtonColor = false
+    btn.Size = UDim2.new(1, 0, 1, 0); btn.BackgroundTransparency = 1
+    btn.Text = ""; btn.AutoButtonColor = false
     btn.MouseButton1Click:Connect(function()
         CFG[key] = not CFG[key]
         TS:Create(sw, TweenInfo.new(0.2), {BackgroundColor3 = CFG[key] and C.Accent or C.Off}):Play()
@@ -737,46 +781,28 @@ end
 local function Slider(parent, label, key, mn, mx, dec, cb)
     dec = dec or 0
     local f = Instance.new("Frame", parent)
-    f.Size = UDim2.new(1, 0, 0, 44)
-    f.BackgroundTransparency = 1
-
+    f.Size = UDim2.new(1, 0, 0, 44); f.BackgroundTransparency = 1
     local lbl = Instance.new("TextLabel", f)
-    lbl.Size = UDim2.new(0.6, 0, 0, 18)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = label
-    lbl.TextColor3 = C.Text
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextSize = 11
+    lbl.Size = UDim2.new(0.6, 0, 0, 18); lbl.BackgroundTransparency = 1
+    lbl.Text = label; lbl.TextColor3 = C.Text
+    lbl.Font = Enum.Font.Gotham; lbl.TextSize = 11
     lbl.TextXAlignment = Enum.TextXAlignment.Left
-
     local val = Instance.new("TextLabel", f)
-    val.Size = UDim2.new(0.4, 0, 0, 18)
-    val.Position = UDim2.new(0.6, 0, 0, 0)
-    val.BackgroundTransparency = 1
-    val.TextColor3 = C.Accent
-    val.Font = Enum.Font.GothamBold
-    val.TextSize = 11
+    val.Size = UDim2.new(0.4, 0, 0, 18); val.Position = UDim2.new(0.6, 0, 0, 0)
+    val.BackgroundTransparency = 1; val.TextColor3 = C.Accent
+    val.Font = Enum.Font.GothamBold; val.TextSize = 11
     val.TextXAlignment = Enum.TextXAlignment.Right
-
     local track = Instance.new("Frame", f)
-    track.Size = UDim2.new(1, 0, 0, 6)
-    track.Position = UDim2.new(0, 0, 0, 24)
-    track.BackgroundColor3 = C.Off
-    track.BorderSizePixel = 0
+    track.Size = UDim2.new(1, 0, 0, 6); track.Position = UDim2.new(0, 0, 0, 24)
+    track.BackgroundColor3 = C.Off; track.BorderSizePixel = 0
     Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
-
     local fill = Instance.new("Frame", track)
-    fill.BackgroundColor3 = C.Accent
-    fill.BorderSizePixel = 0
+    fill.BackgroundColor3 = C.Accent; fill.BorderSizePixel = 0
     Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
-
     local thumb = Instance.new("Frame", track)
-    thumb.Size = UDim2.new(0, 14, 0, 14)
-    thumb.BackgroundColor3 = Color3.new(1,1,1)
-    thumb.BorderSizePixel = 0
-    thumb.ZIndex = 5
+    thumb.Size = UDim2.new(0, 14, 0, 14); thumb.BackgroundColor3 = Color3.new(1,1,1)
+    thumb.BorderSizePixel = 0; thumb.ZIndex = 5
     Instance.new("UICorner", thumb).CornerRadius = UDim.new(1, 0)
-
     local function Update()
         local p = math.clamp((CFG[key]-mn)/(mx-mn), 0, 1)
         fill.Size = UDim2.new(p, 0, 1, 0)
@@ -784,7 +810,6 @@ local function Slider(parent, label, key, mn, mx, dec, cb)
         val.Text = dec > 0 and string.format("%."..dec.."f", CFG[key]) or tostring(math.floor(CFG[key]))
     end
     Update()
-
     local drag = false
     track.InputBegan:Connect(function(i)
         if i.UserInputType == Enum.UserInputType.MouseButton1 then drag = true end
@@ -805,72 +830,43 @@ end
 
 local function Dropdown(parent, label, options, key, cb)
     local f = Instance.new("Frame", parent)
-    f.Size = UDim2.new(1, 0, 0, 30)
-    f.BackgroundTransparency = 1
-
+    f.Size = UDim2.new(1, 0, 0, 30); f.BackgroundTransparency = 1
     local lbl = Instance.new("TextLabel", f)
-    lbl.Size = UDim2.new(0.4, 0, 1, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = label
-    lbl.TextColor3 = C.Text
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextSize = 11
+    lbl.Size = UDim2.new(0.4, 0, 1, 0); lbl.BackgroundTransparency = 1
+    lbl.Text = label; lbl.TextColor3 = C.Text
+    lbl.Font = Enum.Font.Gotham; lbl.TextSize = 11
     lbl.TextXAlignment = Enum.TextXAlignment.Left
-
     local sel = Instance.new("TextButton", f)
-    sel.Size = UDim2.new(0.55, 0, 0, 24)
-    sel.Position = UDim2.new(0.45, 0, 0.5, -12)
-    sel.BackgroundColor3 = C.Off
-    sel.TextColor3 = C.Text
-    sel.Font = Enum.Font.GothamBold
-    sel.TextSize = 10
+    sel.Size = UDim2.new(0.55, 0, 0, 24); sel.Position = UDim2.new(0.45, 0, 0.5, -12)
+    sel.BackgroundColor3 = C.Off; sel.TextColor3 = C.Text
+    sel.Font = Enum.Font.GothamBold; sel.TextSize = 10
     sel.Text = tostring(CFG[key]) .. "  ▼"
-    sel.BorderSizePixel = 0
-    sel.AutoButtonColor = false
+    sel.BorderSizePixel = 0; sel.AutoButtonColor = false
     Instance.new("UICorner", sel).CornerRadius = UDim.new(0, 6)
-
     local dropFrame = Instance.new("Frame", ScreenGui)
     dropFrame.Size = UDim2.new(0, 150, 0, #options * 26 + 4)
     dropFrame.BackgroundColor3 = C.BG3
-    dropFrame.BorderSizePixel = 0
-    dropFrame.Visible = false
-    dropFrame.ZIndex = 100
+    dropFrame.BorderSizePixel = 0; dropFrame.Visible = false; dropFrame.ZIndex = 100
     Instance.new("UICorner", dropFrame).CornerRadius = UDim.new(0, 6)
     local ds = Instance.new("UIStroke", dropFrame); ds.Color = C.Accent
-
     for i, opt in ipairs(options) do
         local ob = Instance.new("TextButton", dropFrame)
-        ob.Size = UDim2.new(1, -4, 0, 24)
-        ob.Position = UDim2.new(0, 2, 0, (i-1)*26 + 2)
-        ob.BackgroundColor3 = C.BG3
-        ob.Text = opt
-        ob.TextColor3 = C.Text
-        ob.Font = Enum.Font.Gotham
-        ob.TextSize = 11
-        ob.BorderSizePixel = 0
-        ob.ZIndex = 101
-        ob.AutoButtonColor = false
+        ob.Size = UDim2.new(1, -4, 0, 24); ob.Position = UDim2.new(0, 2, 0, (i-1)*26 + 2)
+        ob.BackgroundColor3 = C.BG3; ob.Text = opt; ob.TextColor3 = C.Text
+        ob.Font = Enum.Font.Gotham; ob.TextSize = 11
+        ob.BorderSizePixel = 0; ob.ZIndex = 101; ob.AutoButtonColor = false
         Instance.new("UICorner", ob).CornerRadius = UDim.new(0, 4)
-        ob.MouseEnter:Connect(function()
-            TS:Create(ob, TweenInfo.new(0.1), {BackgroundColor3 = C.Accent}):Play()
-        end)
-        ob.MouseLeave:Connect(function()
-            TS:Create(ob, TweenInfo.new(0.1), {BackgroundColor3 = C.BG3}):Play()
-        end)
+        ob.MouseEnter:Connect(function() TS:Create(ob, TweenInfo.new(0.1), {BackgroundColor3 = C.Accent}):Play() end)
+        ob.MouseLeave:Connect(function() TS:Create(ob, TweenInfo.new(0.1), {BackgroundColor3 = C.BG3}):Play() end)
         ob.MouseButton1Click:Connect(function()
-            CFG[key] = opt
-            sel.Text = opt .. "  ▼"
-            dropFrame.Visible = false
+            CFG[key] = opt; sel.Text = opt .. "  ▼"; dropFrame.Visible = false
             if cb then cb(opt) end
         end)
     end
-
     sel.MouseButton1Click:Connect(function()
-        if dropFrame.Visible then
-            dropFrame.Visible = false
+        if dropFrame.Visible then dropFrame.Visible = false
         else
-            local pos = sel.AbsolutePosition
-            local sz = sel.AbsoluteSize
+            local pos = sel.AbsolutePosition; local sz = sel.AbsoluteSize
             dropFrame.Position = UDim2.new(0, pos.X, 0, pos.Y + sz.Y + 4)
             dropFrame.Size = UDim2.new(0, sz.X, 0, #options * 26 + 4)
             dropFrame.Visible = true
@@ -880,85 +876,57 @@ end
 
 local function Button(parent, label, cb, color)
     local btn = Instance.new("TextButton", parent)
-    btn.Size = UDim2.new(1, 0, 0, 30)
-    btn.BackgroundColor3 = color or C.Off
-    btn.TextColor3 = Color3.new(1,1,1)
-    btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 11
-    btn.Text = label
-    btn.BorderSizePixel = 0
-    btn.AutoButtonColor = false
+    btn.Size = UDim2.new(1, 0, 0, 30); btn.BackgroundColor3 = color or C.Off
+    btn.TextColor3 = Color3.new(1,1,1); btn.Font = Enum.Font.GothamBold; btn.TextSize = 11
+    btn.Text = label; btn.BorderSizePixel = 0; btn.AutoButtonColor = false
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-    btn.MouseEnter:Connect(function()
-        TS:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = C.Accent}):Play()
-    end)
-    btn.MouseLeave:Connect(function()
-        TS:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = color or C.Off}):Play()
-    end)
+    btn.MouseEnter:Connect(function() TS:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = C.Accent}):Play() end)
+    btn.MouseLeave:Connect(function() TS:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = color or C.Off}):Play() end)
     btn.MouseButton1Click:Connect(cb)
 end
 
 local function ColorSwatch(parent, label, key)
     local f = Instance.new("Frame", parent)
-    f.Size = UDim2.new(1, 0, 0, 30)
-    f.BackgroundTransparency = 1
-
+    f.Size = UDim2.new(1, 0, 0, 30); f.BackgroundTransparency = 1
     local lbl = Instance.new("TextLabel", f)
-    lbl.Size = UDim2.new(0.6, 0, 1, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = label
-    lbl.TextColor3 = C.Text
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextSize = 11
+    lbl.Size = UDim2.new(0.6, 0, 1, 0); lbl.BackgroundTransparency = 1
+    lbl.Text = label; lbl.TextColor3 = C.Text
+    lbl.Font = Enum.Font.Gotham; lbl.TextSize = 11
     lbl.TextXAlignment = Enum.TextXAlignment.Left
-
     local sw = Instance.new("TextButton", f)
-    sw.Size = UDim2.new(0, 40, 0, 20)
-    sw.Position = UDim2.new(1, -44, 0.5, -10)
-    sw.BackgroundColor3 = CFG[key]
-    sw.Text = ""
-    sw.BorderSizePixel = 0
-    sw.AutoButtonColor = false
+    sw.Size = UDim2.new(0, 40, 0, 20); sw.Position = UDim2.new(1, -44, 0.5, -10)
+    sw.BackgroundColor3 = CFG[key]; sw.Text = ""; sw.BorderSizePixel = 0; sw.AutoButtonColor = false
     Instance.new("UICorner", sw).CornerRadius = UDim.new(0, 4)
     Instance.new("UIStroke", sw).Color = C.Border
-
     local colors = {
         Color3.fromRGB(255,50,100), Color3.fromRGB(255,150,0),
         Color3.fromRGB(255,255,0), Color3.fromRGB(0,255,100),
         Color3.fromRGB(0,200,255), Color3.fromRGB(140,100,255),
         Color3.fromRGB(255,100,255), Color3.fromRGB(255,255,255),
     }
-
     sw.MouseButton1Click:Connect(function()
         local idx = 1
         for i, c in ipairs(colors) do
             if c == CFG[key] then idx = i + 1; break end
         end
         if idx > #colors then idx = 1 end
-        CFG[key] = colors[idx]
-        sw.BackgroundColor3 = colors[idx]
+        CFG[key] = colors[idx]; sw.BackgroundColor3 = colors[idx]
     end)
 end
 
 local function Label(parent, text, color)
     local lbl = Instance.new("TextLabel", parent)
-    lbl.Size = UDim2.new(1, 0, 0, 18)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = text
-    lbl.TextColor3 = color or C.TextDim
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextSize = 10
+    lbl.Size = UDim2.new(1, 0, 0, 18); lbl.BackgroundTransparency = 1
+    lbl.Text = text; lbl.TextColor3 = color or C.TextDim
+    lbl.Font = Enum.Font.Gotham; lbl.TextSize = 10
     lbl.TextXAlignment = Enum.TextXAlignment.Left
 end
-
--- ==================== ЗАПОЛНЕНИЕ ТАБОВ ====================
 
 -- ========== AIMBOT ==========
 do
     local page = TabPages["Aimbot"]
     local layout = Instance.new("UIListLayout", page)
-    layout.Padding = UDim.new(0, 10)
-    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 10); layout.SortOrder = Enum.SortOrder.LayoutOrder
 
     local s1 = CreateSection(page, "SILENT AIM")
     Toggle(s1, "Enable Silent Aim", "SilentAim")
@@ -979,23 +947,44 @@ do
     Toggle(s3, "Enable Trigger Bot", "TriggerBot")
     Slider(s3, "Delay (ms)", "TriggerDelay", 10, 500)
 
-    local s4 = CreateSection(page, "WEAPON PRESETS")
-    Button(s4, "Pistol", function()
-        CFG.SilentAimPrediction=0.145; CFG.BulletSpeed=1500
-        Notify("Preset","Pistol",2)
-    end)
-    Button(s4, "AR / SMG", function()
-        CFG.SilentAimPrediction=0.15; CFG.BulletSpeed=1300
-        Notify("Preset","AR",2)
-    end)
-    Button(s4, "Sniper", function()
-        CFG.SilentAimPrediction=0.17; CFG.BulletSpeed=1000
-        Notify("Preset","Sniper",2)
-    end)
-    Button(s4, "Shotgun", function()
-        CFG.SilentAimPrediction=0.13; CFG.BulletSpeed=800
-        Notify("Preset","Shotgun",2)
-    end)
+    -- Пресеты зависят от игры
+    local s4 = CreateSection(page, "WEAPON PRESETS ("..GAME..")")
+    if isDaHood then
+        Button(s4, "🔫 Pistol", function()
+            CFG.SilentAimPrediction=0.145; CFG.BulletSpeed=1500
+            Notify("Preset","Da Hood Pistol",2)
+        end)
+        Button(s4, "⚡ AR / SMG", function()
+            CFG.SilentAimPrediction=0.15; CFG.BulletSpeed=1300
+            Notify("Preset","Da Hood AR",2)
+        end)
+        Button(s4, "🎯 Sniper", function()
+            CFG.SilentAimPrediction=0.17; CFG.BulletSpeed=1000
+            Notify("Preset","Da Hood Sniper",2)
+        end)
+        Button(s4, "💥 Shotgun", function()
+            CFG.SilentAimPrediction=0.13; CFG.BulletSpeed=800
+            Notify("Preset","Da Hood Shotgun",2)
+        end)
+    else
+        -- Boom Hood presets (другие тайминги)
+        Button(s4, "🔫 Pistol (BH)", function()
+            CFG.SilentAimPrediction=0.13; CFG.BulletSpeed=1500
+            Notify("Preset","Boom Hood Pistol",2)
+        end)
+        Button(s4, "⚡ AR / SMG (BH)", function()
+            CFG.SilentAimPrediction=0.138; CFG.BulletSpeed=1300
+            Notify("Preset","Boom Hood AR",2)
+        end)
+        Button(s4, "🎯 Sniper (BH)", function()
+            CFG.SilentAimPrediction=0.155; CFG.BulletSpeed=1000
+            Notify("Preset","Boom Hood Sniper",2)
+        end)
+        Button(s4, "💥 Shotgun (BH)", function()
+            CFG.SilentAimPrediction=0.125; CFG.BulletSpeed=800
+            Notify("Preset","Boom Hood Shotgun",2)
+        end)
+    end
 
     local s5 = CreateSection(page, "CROSSHAIR")
     Toggle(s5, "Custom Crosshair", "Crosshair")
@@ -1009,9 +998,7 @@ end
 do
     local page = TabPages["Visuals"]
     local layout = Instance.new("UIListLayout", page)
-    layout.Padding = UDim.new(0, 10)
-    layout.SortOrder = Enum.SortOrder.LayoutOrder
-
+    layout.Padding = UDim.new(0, 10); layout.SortOrder = Enum.SortOrder.LayoutOrder
     local s1 = CreateSection(page, "ESP MAIN")
     Toggle(s1, "Enable ESP", "ESP")
     Toggle(s1, "Boxes", "ESPBoxes")
@@ -1021,11 +1008,9 @@ do
     Toggle(s1, "Weapon", "ESPWeapon")
     Toggle(s1, "Head Dot", "ESPHeadDot")
     Slider(s1, "Max Distance", "ESPMaxDist", 100, 5000)
-
     local s2 = CreateSection(page, "TRACERS")
     Toggle(s2, "Enable Tracers", "ESPTracers")
     Dropdown(s2, "Origin", {"Bottom","Middle","Top"}, "ESPTracerFrom")
-
     local s3 = CreateSection(page, "FOV CIRCLE")
     Toggle(s3, "Show FOV Circle", "ShowFOV")
     Toggle(s3, "Show Prediction Dot", "ShowFOVDot")
@@ -1038,57 +1023,40 @@ end
 do
     local page = TabPages["Player"]
     local layout = Instance.new("UIListLayout", page)
-    layout.Padding = UDim.new(0, 10)
-    layout.SortOrder = Enum.SortOrder.LayoutOrder
-
+    layout.Padding = UDim.new(0, 10); layout.SortOrder = Enum.SortOrder.LayoutOrder
     local s1 = CreateSection(page, "YOUR STATS")
     local infoBox = Instance.new("Frame", s1)
-    infoBox.Size = UDim2.new(1, 0, 0, 90)
-    infoBox.BackgroundColor3 = C.BG3
+    infoBox.Size = UDim2.new(1, 0, 0, 100); infoBox.BackgroundColor3 = C.BG3
     infoBox.BorderSizePixel = 0
     Instance.new("UICorner", infoBox).CornerRadius = UDim.new(0, 6)
-
     local infoLbl = Instance.new("TextLabel", infoBox)
-    infoLbl.Size = UDim2.new(1, -20, 1, -10)
-    infoLbl.Position = UDim2.new(0, 10, 0, 5)
-    infoLbl.BackgroundTransparency = 1
-    infoLbl.TextColor3 = C.Text
-    infoLbl.Font = Enum.Font.Gotham
-    infoLbl.TextSize = 11
-    infoLbl.TextXAlignment = Enum.TextXAlignment.Left
-    infoLbl.TextYAlignment = Enum.TextYAlignment.Top
+    infoLbl.Size = UDim2.new(1, -20, 1, -10); infoLbl.Position = UDim2.new(0, 10, 0, 5)
+    infoLbl.BackgroundTransparency = 1; infoLbl.TextColor3 = C.Text
+    infoLbl.Font = Enum.Font.Gotham; infoLbl.TextSize = 11
+    infoLbl.TextXAlignment = Enum.TextXAlignment.Left; infoLbl.TextYAlignment = Enum.TextYAlignment.Top
     infoLbl.Text = "..."
-
     task.spawn(function()
         while ScreenGui.Parent do
             pcall(function()
                 infoLbl.Text = string.format(
-                    "Name: %s\nHealth: %d/%d\nPing: %dms\nFPS: %d",
-                    LP.Name, GetHP(GetChar()), GetMaxHP(GetChar()), GetPing(), FPS
+                    "Game: %s\nName: %s\nHealth: %d/%d\nPing: %dms\nFPS: %d",
+                    GAME, LP.Name, GetHP(GetChar()), GetMaxHP(GetChar()), GetPing(), FPS
                 )
             end)
             task.wait(0.5)
         end
     end)
-
     local s2 = CreateSection(page, "TARGET INFO")
     local tBox = Instance.new("Frame", s2)
-    tBox.Size = UDim2.new(1, 0, 0, 100)
-    tBox.BackgroundColor3 = C.BG3
+    tBox.Size = UDim2.new(1, 0, 0, 100); tBox.BackgroundColor3 = C.BG3
     tBox.BorderSizePixel = 0
     Instance.new("UICorner", tBox).CornerRadius = UDim.new(0, 6)
-
     local tLbl = Instance.new("TextLabel", tBox)
-    tLbl.Size = UDim2.new(1, -20, 1, -10)
-    tLbl.Position = UDim2.new(0, 10, 0, 5)
-    tLbl.BackgroundTransparency = 1
-    tLbl.TextColor3 = C.TextDim
-    tLbl.Font = Enum.Font.Gotham
-    tLbl.TextSize = 11
-    tLbl.TextXAlignment = Enum.TextXAlignment.Left
-    tLbl.TextYAlignment = Enum.TextYAlignment.Top
+    tLbl.Size = UDim2.new(1, -20, 1, -10); tLbl.Position = UDim2.new(0, 10, 0, 5)
+    tLbl.BackgroundTransparency = 1; tLbl.TextColor3 = C.TextDim
+    tLbl.Font = Enum.Font.Gotham; tLbl.TextSize = 11
+    tLbl.TextXAlignment = Enum.TextXAlignment.Left; tLbl.TextYAlignment = Enum.TextYAlignment.Top
     tLbl.Text = "No target"
-
     task.spawn(function()
         while ScreenGui.Parent do
             pcall(function()
@@ -1102,29 +1070,23 @@ do
                     )
                     tLbl.TextColor3 = C.Green
                 else
-                    tLbl.Text = "No target selected"
-                    tLbl.TextColor3 = C.TextDim
+                    tLbl.Text = "No target selected"; tLbl.TextColor3 = C.TextDim
                 end
             end)
             task.wait(0.3)
         end
     end)
-
     local s3 = CreateSection(page, "PLAYER LIST")
     local list = Instance.new("ScrollingFrame", s3)
-    list.Size = UDim2.new(1, 0, 0, 200)
-    list.BackgroundColor3 = C.BG3
-    list.BorderSizePixel = 0
-    list.ScrollBarThickness = 3
+    list.Size = UDim2.new(1, 0, 0, 200); list.BackgroundColor3 = C.BG3
+    list.BorderSizePixel = 0; list.ScrollBarThickness = 3
     list.ScrollBarImageColor3 = C.Accent
     list.CanvasSize = UDim2.new(0, 0, 0, 0)
     list.AutomaticCanvasSize = Enum.AutomaticSize.Y
     Instance.new("UICorner", list).CornerRadius = UDim.new(0, 6)
-    local ll = Instance.new("UIListLayout", list)
-    ll.Padding = UDim.new(0, 2)
+    local ll = Instance.new("UIListLayout", list); ll.Padding = UDim.new(0, 2)
     local lp = Instance.new("UIPadding", list)
     lp.PaddingTop = UDim.new(0,4); lp.PaddingLeft = UDim.new(0,4); lp.PaddingRight = UDim.new(0,4)
-
     local function Refresh()
         for _, c in ipairs(list:GetChildren()) do
             if c:IsA("Frame") then c:Destroy() end
@@ -1132,41 +1094,25 @@ do
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LP then
                 local row = Instance.new("Frame", list)
-                row.Size = UDim2.new(1, -8, 0, 26)
-                row.BackgroundColor3 = C.Card
+                row.Size = UDim2.new(1, -8, 0, 26); row.BackgroundColor3 = C.Card
                 row.BorderSizePixel = 0
                 Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
-
                 local nl = Instance.new("TextLabel", row)
-                nl.Size = UDim2.new(0.65, 0, 1, 0)
-                nl.Position = UDim2.new(0, 8, 0, 0)
-                nl.BackgroundTransparency = 1
-                nl.Text = plr.Name
-                nl.TextColor3 = C.Text
-                nl.Font = Enum.Font.Gotham
-                nl.TextSize = 10
-                nl.TextXAlignment = Enum.TextXAlignment.Left
-
+                nl.Size = UDim2.new(0.65, 0, 1, 0); nl.Position = UDim2.new(0, 8, 0, 0)
+                nl.BackgroundTransparency = 1; nl.Text = plr.Name; nl.TextColor3 = C.Text
+                nl.Font = Enum.Font.Gotham; nl.TextSize = 10; nl.TextXAlignment = Enum.TextXAlignment.Left
                 local hpl = Instance.new("TextLabel", row)
-                hpl.Size = UDim2.new(0.35, -8, 1, 0)
-                hpl.Position = UDim2.new(0.65, 0, 0, 0)
+                hpl.Size = UDim2.new(0.35, -8, 1, 0); hpl.Position = UDim2.new(0.65, 0, 0, 0)
                 hpl.BackgroundTransparency = 1
                 hpl.Text = plr.Character and GetHP(plr.Character).."hp" or "-"
-                hpl.TextColor3 = C.Green
-                hpl.Font = Enum.Font.GothamBold
-                hpl.TextSize = 10
+                hpl.TextColor3 = C.Green; hpl.Font = Enum.Font.GothamBold; hpl.TextSize = 10
                 hpl.TextXAlignment = Enum.TextXAlignment.Right
             end
         end
     end
-
     task.spawn(function()
-        while ScreenGui.Parent do
-            pcall(Refresh)
-            task.wait(2)
-        end
+        while ScreenGui.Parent do pcall(Refresh); task.wait(2) end
     end)
-
     Button(s3, "Refresh List", Refresh)
 end
 
@@ -1174,30 +1120,47 @@ end
 do
     local page = TabPages["Settings"]
     local layout = Instance.new("UIListLayout", page)
-    layout.Padding = UDim.new(0, 10)
-    layout.SortOrder = Enum.SortOrder.LayoutOrder
-
+    layout.Padding = UDim.new(0, 10); layout.SortOrder = Enum.SortOrder.LayoutOrder
+    
+    local s0 = CreateSection(page, "🎮 GAME INFO")
+    Label(s0, "Detected: " .. GAME, C.Accent)
+    Label(s0, "Game: " .. GAME_NAME, C.Text)
+    Label(s0, "PlaceId: " .. tostring(GAME_ID), C.TextDim)
+    Label(s0, "")
+    if GAME == "DaHood" then
+        Label(s0, "✅ Da Hood config loaded", C.Green)
+        Label(s0, "Prediction: 0.165 (default)", C.TextDim)
+        Label(s0, "Bullet Speed: 1800", C.TextDim)
+    else
+        Label(s0, "✅ Boom Hood config loaded", C.Green)
+        Label(s0, "Prediction: 0.138 (default)", C.TextDim)
+        Label(s0, "Bullet Speed: 1500", C.TextDim)
+        Label(s0, "Anti-Kick: enabled", C.Green)
+        Label(s0, "Hook Delay: 3-6 sec", C.Yellow)
+    end
+    
     local s1 = CreateSection(page, "HOTKEYS")
     Label(s1, "INSERT — toggle GUI", C.Text)
     Label(s1, "F2 — toggle Silent Aim", C.Text)
     Label(s1, "F3 — toggle ESP", C.Text)
     Label(s1, "DELETE — unload cheat", C.Red)
-
+    
     local s2 = CreateSection(page, "ABOUT")
-    Label(s2, "SAFE HUB v3.1", C.Accent)
-    Label(s2, "Bypass Anti-Cheat", C.Green)
+    Label(s2, "SAFE HUB v4.0 Universal", C.Accent)
+    Label(s2, "Da Hood + Boom Hood Support", C.Green)
     Label(s2, "")
     Label(s2, "SAFE FEATURES:", C.Text)
     Label(s2, "✓ Silent Aim (Raycast hook)", C.Green)
+    Label(s2, "✓ Auto Game Detection", C.Green)
     Label(s2, "✓ ESP (Drawing library)", C.Green)
     Label(s2, "✓ Trigger Bot", C.Green)
     Label(s2, "✓ Custom Crosshair", C.Green)
+    Label(s2, "✓ Anti-Kick (Boom Hood)", C.Green)
     Label(s2, "")
     Label(s2, "REMOVED (detected):", C.Red)
     Label(s2, "✗ Chams / Highlights", C.TextDim)
     Label(s2, "✗ FullBright / NoFog", C.TextDim)
-    Label(s2, "✗ Camera FOV changes", C.TextDim)
-
+    
     local s3 = CreateSection(page, "DANGER ZONE")
     Button(s3, "UNLOAD CHEAT", function()
         for _, o in pairs(DrawObjs) do pcall(function() o:Remove() end) end
@@ -1243,8 +1206,9 @@ task.spawn(function()
     end
 end)
 
-Notify("SAFE HUB v3.1", "Загружен! INSERT — открыть меню", 4)
+Notify("SAFE HUB v4.0", "🎮 Загружен для "..GAME.."! INSERT — меню", 5)
 print("============================================")
-print("  SAFE HUB v3.1 - Fixed + Bypass AC")
+print("  SAFE HUB v4.0 - Universal Edition")
+print("  Game: "..GAME.." | " .. GAME_NAME)
 print("  INSERT=menu F2=SA F3=ESP DEL=unload")
 print("============================================")
